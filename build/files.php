@@ -10,4 +10,6 @@ return [
     'Config.php',
     'Baseline.php',
     'Walker.php',
+    'Budget.php',
+    'Differ.php',
 ];
