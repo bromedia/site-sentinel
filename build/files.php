@@ -31,4 +31,5 @@ return [
     'Alerter.php',
     'Digest.php',
     'Monitor.php',
+    'RulesUpdater.php',
 ];
