@@ -100,10 +100,14 @@ t('WpChecksum verifies repository plugins and stays silent for premium ones', fu
     putFile($root, 'wp-content/plugins/we ird/b.php', pluginHeader('1'));
     $http = new FakeHttp();
     coreRoute($http, ['index.php' => 'x']);
+    // The real wordpress.org shape: files => path => {md5, sha256}, each a string or a list.
     $http->route('https://downloads.wordpress.org/plugin-checksums/foo/1.0.json', 200, json_encode([
-        'plugin' => 'foo', 'version' => '1.0',
-        'sha256' => ['inc/x.php' => [hash('sha256', 'X')], 'inc/y.php' => hash('sha256', 'Y')],
-        'md5' => ['foo.php' => [md5(pluginHeader('1.0'))]],
+        'plugin' => 'foo', 'version' => '1.0', 'source' => 'https://plugins.svn.wordpress.org/foo/tags/1.0/', 'zip' => 'https://downloads.wordpress.org/plugin/foo.1.0.zip',
+        'files' => [
+            'inc/x.php' => ['md5' => md5('X'), 'sha256' => [hash('sha256', 'X')]],
+            'inc/y.php' => ['md5' => md5('Y'), 'sha256' => hash('sha256', 'Y')],
+            'foo.php' => ['md5' => [md5(pluginHeader('1.0'))]],
+        ],
     ]));
     $http->route('https://downloads.wordpress.org/plugin-checksums/premium/', 404, '{"error":"not found"}');
     $wp = new WpChecksum($http, $c, tmpdir());
@@ -126,4 +130,17 @@ t('WpChecksum reports a missing WordPress version as a note', function () {
     $wp = new WpChecksum(new FakeHttp(), $c, tmpdir());
     assertSame(WpChecksum::UNKNOWN, $wp->verify('wp-includes/a.php'));
     assertContains('version', implode(' ', $wp->notes()));
+});
+
+t('WpChecksum treats an unrecognised plugin checksum response as unknown, with a note', function () {
+    $root = tmpdir();
+    $c = wpSite($root);
+    putFile($root, 'wp-content/plugins/foo/foo.php', pluginHeader('1.0'));
+    $http = new FakeHttp();
+    coreRoute($http, ['index.php' => 'x']);
+    // An old/unexpected shape must never be read as "no files match" or as a silent premium plugin.
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/1.0.json', 200, json_encode(['sha256' => ['foo.php' => 'abc']]));
+    $wp = new WpChecksum($http, $c, tmpdir());
+    assertSame(WpChecksum::UNKNOWN, $wp->verify('wp-content/plugins/foo/foo.php'));
+    assertContains('unexpected format', implode(' ', $wp->notes()));
 });

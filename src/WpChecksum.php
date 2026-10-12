@@ -155,16 +155,20 @@ final class WpChecksum
             }
             $j = json_decode($r['body'], true);
             $map = [];
-            if (is_array($j)) {
-                foreach (['sha256', 'md5'] as $algo) {
-                    if (isset($j[$algo]) && is_array($j[$algo])) {
-                        foreach ($j[$algo] as $file => $hashes) {
-                            $map[(string)$file][$algo] = array_values(array_map('strtolower', array_map('strval', (array)$hashes)));
+            if (is_array($j) && isset($j['files']) && is_array($j['files'])) {
+                foreach ($j['files'] as $file => $hashes) {
+                    if (!is_array($hashes)) {
+                        continue;
+                    }
+                    foreach (['sha256', 'md5'] as $algo) {
+                        if (isset($hashes[$algo])) {
+                            $map[(string)$file][$algo] = array_values(array_map('strtolower', array_map('strval', (array)$hashes[$algo])));
                         }
                     }
                 }
             }
             if (!$map) {
+                $this->note("Checksum data for plugin '$slug' had an unexpected format; verification skipped");
                 return null;
             }
             $this->writeCache($cache, $map);
