@@ -78,10 +78,15 @@ final class Init
         $findings = [];
         $notes = [];
         $tmp = $state->path('baseline.init');
-        $records = (function () use ($config, $differ, $analyzer, &$findings, &$notes) {
+        $symlinkDirs = [];
+        $records = (function () use ($config, $differ, $analyzer, &$findings, &$notes, &$symlinkDirs) {
             $batch = [];
             foreach ((new Walker($config))->walk() as $meta) {
                 [$rec, $unreadable] = $differ->record($meta);
+                if (($rec['mode'] & 0170000) === 0120000 && is_dir($config->abs($rec['path']))) {
+                    $target = @readlink($config->abs($rec['path']));
+                    $symlinkDirs[] = [$rec['path'], $target === false ? '?' : $target];
+                }
                 if ($analyzer->wantsAnalysis($rec)) {
                     $batch[] = ['type' => 'new', 'path' => $rec['path'], 'old' => null, 'new' => $rec, 'stealth' => false, 'content_same' => false, 'unreadable' => $unreadable];
                     if (count($batch) >= self::BATCH) {
@@ -131,6 +136,9 @@ final class Init
         }
         foreach (array_unique($notes) as $n) {
             $lines[] = 'note: ' . $n;
+        }
+        foreach ($symlinkDirs as [$path, $target]) {
+            $lines[] = sprintf("note: '%s' is a symlink to a directory (%s). Sentinel does not follow symlinks, so nothing inside it is monitored: set up a second config with site_root set to the target.", $path, $target);
         }
         $lines[] = '';
         $lines[] = 'Add these lines to the crontab of the account that owns the site (crontab -e, or cPanel > Cron Jobs):';

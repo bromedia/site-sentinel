@@ -245,3 +245,19 @@ t('update-rules: running it without a rules_url is a usage error, not an alert',
     assertContains('rules_url', implode("\n", $r['err']));
     assertTrue(!is_file($alerts), 'no alert for a missing setting');
 });
+
+t('Init tells the owner about symlinked directories, which are not followed', function () {
+    [$site, $tool, $opts] = initFixture(['index.php' => '<?php']);
+    $real = tmpdir();
+    putFile($real, 'shell.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    mkdir($site . '/wp-content');
+    symlink($real, $site . '/wp-content/uploads');
+    symlink($site . '/index.php', $site . '/home-link'); // a symlink to a file is not a directory
+    $r = Init::run($opts, $tool . '/sentinel.php', new FakeHttp());
+    assertSame(0, $r['exit'], implode("\n", $r['lines']));
+    $out = implode("\n", $r['lines']);
+    assertContains("'wp-content/uploads' is a symlink to a directory", $out);
+    assertContains($real, $out);
+    assertContains('does not follow symlinks', $out);
+    assertNotContains("'home-link'", $out);
+});
