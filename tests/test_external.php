@@ -78,3 +78,31 @@ t('ExternalScanner::find locates executables on PATH', function () {
     assertSame('/bin/sh', realpath((string)ExternalScanner::find('sh')) === realpath('/bin/sh') ? '/bin/sh' : 'other');
     assertSame(null, ExternalScanner::find('definitely-not-a-real-binary-xyz'));
 });
+
+t('ExternalScanner degrades with a note when proc_open is disabled (common on shared hosts)', function () {
+    $dir = tmpdir();
+    $script = $dir . '/child.php';
+    file_put_contents($script, '<?php
+require ' . var_export(__DIR__ . '/bootstrap.php', true) . ';
+$root = ' . var_export($dir, true) . ';
+$tool = $root . "/clamscan";
+file_put_contents($tool, "#!/bin/sh\nexit 0\n");
+chmod($tool, 0755);
+$c = Sentinel\Config::fromArray(["site_name" => "x", "site_root" => $root, "state_dir" => $root . "/s", "clamscan_path" => $tool]);
+$s = Sentinel\ExternalScanner::fromConfig($c);
+echo json_encode([
+    "available" => Sentinel\Proc::available(),
+    "enabled" => $s->enabled(),
+    "findings" => count($s->scan(["a.php" => $root . "/a.php"])),
+    "errors" => $s->errors(),
+    "run" => Sentinel\Proc::run(["/bin/true"], 1)["exit"],
+]);');
+    $r = Proc::run([PHP_BINARY, '-d', 'disable_functions=proc_open', $script], 30);
+    assertSame(0, $r['exit'], $r['out'] . $r['err']);
+    $j = json_decode($r['out'], true);
+    assertSame(false, $j['available']);
+    assertSame(false, $j['enabled']);
+    assertSame(0, $j['findings']);
+    assertSame(-1, $j['run']);
+    assertContains('proc_open', implode(' ', $j['errors']));
+});

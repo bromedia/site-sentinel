@@ -5,6 +5,12 @@ namespace Sentinel;
 
 final class Proc
 {
+    /** False on hosts that list proc_open in disable_functions. */
+    public static function available(): bool
+    {
+        return function_exists('proc_open');
+    }
+
     /**
      * Runs a command (argument array, no shell) with a timeout.
      *
@@ -12,6 +18,9 @@ final class Proc
      */
     public static function run(array $cmd, int $timeout): array
     {
+        if (!self::available()) {
+            return ['exit' => -1, 'out' => '', 'err' => 'proc_open is disabled on this host', 'timed_out' => false];
+        }
         $spec = [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $p = @proc_open($cmd, $spec, $pipes);
         if (!is_resource($p)) {

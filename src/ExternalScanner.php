@@ -13,9 +13,11 @@ final class ExternalScanner
     private $yaraRules;
     /** @var string[] */
     private $errors = [];
+    private $disabledNote;
 
-    public function __construct(?string $clamscan, ?string $yara, ?string $yaraRules)
+    public function __construct(?string $clamscan, ?string $yara, ?string $yaraRules, ?string $disabledNote = null)
     {
+        $this->disabledNote = $disabledNote;
         $this->clamscan = $clamscan;
         $this->yara = $yara !== null && $yaraRules !== null && $yaraRules !== '' ? $yara : null;
         $this->yaraRules = $yaraRules;
@@ -30,6 +32,9 @@ final class ExternalScanner
         }
         if ($yara !== null && (!is_executable($yara) || $c->yaraRules === '' || !is_file($c->yaraRules))) {
             $yara = null;
+        }
+        if (($clam !== null || $yara !== null) && !Proc::available()) {
+            return new ExternalScanner(null, null, null, 'ClamAV/YARA found but proc_open is disabled on this host; external scanning skipped');
         }
         return new ExternalScanner($clam, $yara, $c->yaraRules);
     }
@@ -64,6 +69,9 @@ final class ExternalScanner
     {
         $this->errors = [];
         if (!$files || !$this->enabled()) {
+            if ($files && $this->disabledNote !== null) {
+                $this->errors[] = $this->disabledNote;
+            }
             return [];
         }
         $byAbs = [];
