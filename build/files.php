@@ -6,4 +6,6 @@ declare(strict_types=1);
 return [
     'PathOrder.php',
     'PathFilter.php',
+    'Profile.php',
+    'Config.php',
 ];
