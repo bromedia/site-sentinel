@@ -63,16 +63,35 @@ final class Rules
         return self::fromArray($data);
     }
 
-    /** @return array[] the patterns that match $content */
-    public function matchContent(string $content): array
+    /**
+     * @param array[]|null $failed receives ['id'=>, 'error'=>] for every rule whose regex could not be evaluated
+     * @return array[] the patterns that match $content
+     */
+    public function matchContent(string $content, ?array &$failed = null): array
     {
         $hits = [];
         foreach ($this->patterns as $p) {
-            if (preg_match($p['regex'], $content) === 1) {
+            $r = preg_match($p['regex'], $content);
+            if ($r === 1) {
                 $hits[] = $p;
+            } elseif ($r === false && $failed !== null) {
+                $failed[] = ['id' => $p['id'], 'error' => self::pcreError(preg_last_error())];
             }
         }
         return $hits;
+    }
+
+    private static function pcreError(int $code): string
+    {
+        switch ($code) {
+            case PREG_BACKTRACK_LIMIT_ERROR:
+                return 'backtrack limit reached';
+            case PREG_RECURSION_LIMIT_ERROR:
+                return 'recursion limit reached';
+            case PREG_JIT_STACKLIMIT_ERROR:
+                return 'JIT stack limit reached';
+        }
+        return 'PCRE error ' . $code;
     }
 
     public function badHash(string $sha256): ?string

@@ -25,9 +25,13 @@ final class PatternScanner
         if ($content === null) {
             return $out;
         }
-        foreach ($this->rules->matchContent($content) as $p) {
+        $failed = [];
+        foreach ($this->rules->matchContent($content, $failed) as $p) {
             $sev = $p['severity'] === 'critical' ? Finding::CRITICAL : Finding::WARNING;
             $out[] = new Finding($sev, $rel, $p['id'], $p['description'], $sha256);
+        }
+        foreach ($failed as $f) {
+            $out[] = new Finding(Finding::WARNING, $rel, 'scan-error', sprintf("Rule '%s' could not be evaluated (%s); the file was not fully scanned", $f['id'], $f['error']), $sha256);
         }
         return $out;
     }

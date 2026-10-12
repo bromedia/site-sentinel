@@ -21,6 +21,7 @@ final class Digest
         'world-writable' => 'Set sane permissions (644 for files, 755 for directories).',
         'self-tamper' => 'A Sentinel file changed. If you updated Sentinel, run: php sentinel.php accept --self. Otherwise treat as a compromise.',
         'run-error' => 'Sentinel could not complete its check, so the site is not being monitored. Fix the cause and run it again.',
+        'scan-error' => 'A detection rule could not run on this file, which can happen with unusually large or deliberately crafted files. Inspect it manually.',
         'unreadable' => 'Fix the file permissions so Sentinel can read it, or exclude it.',
         'unreadable-dir' => 'Fix the directory permissions so Sentinel can read it, or exclude it.',
         'config-in-uploads' => 'Server configuration in uploads can enable code execution. Inspect and remove it if it is not yours.',

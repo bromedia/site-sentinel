@@ -165,3 +165,23 @@ t('LocationScanner flags a PHP extension hidden before a media extension outside
     assertSame([], $s->scan('themes/t/ok.php', lrec($root, 'themes/t/ok.php'), true));
     assertSame([], $s->scan('themes/t/photo.jpg', lrec($root, 'themes/t/photo.jpg'), true));
 });
+
+t('PatternScanner reports a rule that failed to run instead of treating the file as clean', function () {
+    $root = tmpdir();
+    $abs = putFile($root, 'a.php', str_repeat('a', 40) . '!');
+    $rules = Rules::fromArray(['patterns' => [['id' => 'heavy', 'severity' => 'critical', 'regex' => '/^(a+)+$/', 'description' => 'heavy rule']]]);
+    $jit = ini_set('pcre.jit', '0');
+    $limit = ini_set('pcre.backtrack_limit', '100');
+    try {
+        $f = (new PatternScanner($rules, 1048576))->scan('a.php', $abs, 'abc');
+    } finally {
+        ini_set('pcre.jit', (string)$jit);
+        ini_set('pcre.backtrack_limit', (string)$limit);
+    }
+    assertSame(['scan-error'], rulesOf($f));
+    assertSame(Finding::WARNING, $f[0]->severity);
+    assertContains("'heavy'", $f[0]->message);
+    // The same rule on an ordinary file is unaffected.
+    $ok = putFile($root, 'b.php', '<?php echo 1;');
+    assertSame([], (new PatternScanner($rules, 1048576))->scan('b.php', $ok, ''));
+});
