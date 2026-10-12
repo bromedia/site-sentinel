@@ -12,4 +12,8 @@ return [
     'Walker.php',
     'Budget.php',
     'Differ.php',
+    'Finding.php',
+    'Rules.php',
+    'PatternScanner.php',
+    'LocationScanner.php',
 ];
