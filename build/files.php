@@ -30,4 +30,5 @@ return [
     'Notifiers.php',
     'Alerter.php',
     'Digest.php',
+    'Monitor.php',
 ];
