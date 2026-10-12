@@ -61,7 +61,7 @@ t('Init creates config, baseline, versions and prints cron lines', function () {
     assertTrue(is_file($state->path('selfcheck.json')));
 });
 
-t('Init refuses a site that already contains malware unless forced, and never overwrites a config silently', function () {
+t('Init refuses a site that already contains malware unless forced, leaving nothing behind', function () {
     [$site, $tool, $opts] = initFixture(['index.php' => '<?php', 'lib/evil.php' => '<?php // SENTINEL-TEST-MALWARE-MARKER']);
     $r = Init::run($opts, $tool . '/sentinel.php', new FakeHttp());
     assertSame(1, $r['exit']);
@@ -69,11 +69,17 @@ t('Init refuses a site that already contains malware unless forced, and never ov
     assertContains('--force', implode("\n", $r['lines']));
     assertTrue(!is_file($tool . '/sentinel-state/baseline.txt'));
     assertTrue(!is_file($tool . '/sentinel-state/baseline.init'), 'temp baseline removed');
+    assertTrue(!is_file($tool . '/sentinel.json'), 'a refused init leaves no config, so cleaning the site is enough to retry');
+
+    unlink($site . '/lib/evil.php');
+    $clean = Init::run($opts, $tool . '/sentinel.php', new FakeHttp());
+    assertSame(0, $clean['exit'], implode("\n", $clean['lines']));
 
     $again = Init::run($opts, $tool . '/sentinel.php', new FakeHttp());
     assertSame(2, $again['exit']);
     assertContains('already exists', implode("\n", $again['lines']));
 
+    putFile($site, 'lib/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
     $forced = Init::run(array_merge($opts, ['force' => true]), $tool . '/sentinel.php', new FakeHttp());
     assertSame(0, $forced['exit']);
     assertContains('WARNING', implode("\n", $forced['lines']));

@@ -59,12 +59,6 @@ final class Init
             return self::fail($e->getMessage());
         }
 
-        $json = json_encode($config->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        if ($json === false || file_put_contents($configFile, $json . "\n") === false) {
-            return self::fail("cannot write $configFile");
-        }
-        @chmod($configFile, 0600);
-
         $config->addExclusion($script);
         $config->addExclusion($configFile);
         $state = new State($config->stateDir);
@@ -111,6 +105,13 @@ final class Init
             $lines[] = 'Clean the site, then run init again. To accept the risk and baseline anyway, add --force.';
             return ['exit' => 1, 'lines' => $lines];
         }
+        // The config is written only once the scan has passed, so a refused init leaves nothing behind.
+        $json = json_encode($config->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($json === false || file_put_contents($configFile, $json . "\n") === false) {
+            @unlink($tmp);
+            return self::fail("cannot write $configFile");
+        }
+        @chmod($configFile, 0600);
         if (!rename($tmp, $state->path('baseline.txt'))) {
             @unlink($tmp);
             return self::fail('cannot install the baseline');
