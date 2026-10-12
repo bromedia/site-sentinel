@@ -16,4 +16,5 @@ return [
     'Rules.php',
     'PatternScanner.php',
     'LocationScanner.php',
+    'HttpClient.php',
 ];
