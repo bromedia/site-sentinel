@@ -32,4 +32,7 @@ return [
     'Digest.php',
     'Monitor.php',
     'RulesUpdater.php',
+    'Init.php',
+    'Accept.php',
+    'Cli.php',
 ];
