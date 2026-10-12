@@ -26,4 +26,8 @@ return [
     'Lock.php',
     'AlertLog.php',
     'SelfCheck.php',
+    'Notifier.php',
+    'Notifiers.php',
+    'Alerter.php',
+    'Digest.php',
 ];
