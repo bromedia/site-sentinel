@@ -21,4 +21,5 @@ return [
     'WpChecksum.php',
     'Proc.php',
     'ExternalScanner.php',
+    'Analyzer.php',
 ];
