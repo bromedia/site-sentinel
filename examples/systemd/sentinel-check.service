@@ -1,0 +1,9 @@
+[Unit]
+Description=Site Sentinel quick check
+
+[Service]
+Type=oneshot
+User=www-data
+ExecStart=/usr/bin/php /opt/sentinel/sentinel.php check --config=/opt/sentinel/sentinel.json
+Nice=19
+IOSchedulingClass=idle

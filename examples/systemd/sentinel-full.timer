@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Site Sentinel full scan nightly
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
