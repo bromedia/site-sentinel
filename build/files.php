@@ -19,4 +19,6 @@ return [
     'HttpClient.php',
     'VersionTracker.php',
     'WpChecksum.php',
+    'Proc.php',
+    'ExternalScanner.php',
 ];
