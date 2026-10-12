@@ -17,7 +17,7 @@ function analyzerFor(Config $c, ?WpChecksum $wp = null, ?ExternalScanner $x = nu
 }
 
 /** Creates a WordPress site, snapshots it, and returns [root, config, baselineFile]. */
-function wpFixture(array $files = []): array
+function wpFixture(array $files = [], array $cfg = []): array
 {
     $root = tmpdir();
     putFile($root, 'wp-config.php', '<?php // config');
@@ -27,17 +27,17 @@ function wpFixture(array $files = []): array
     foreach ($files as $rel => $content) {
         putFile($root, $rel, $content);
     }
-    $c = makeConfig($root, ['profile' => 'wordpress']);
+    $c = makeConfig($root, array_merge(['profile' => 'wordpress'], $cfg));
     $b = tmpdir() . '/b.txt';
     snapshot($c, $b);
     return [$root, $c, $b];
 }
 
-function runAnalysis(Config $c, string $b, ?Analyzer $a = null, array $old = [], bool $initial = false, bool $full = false): array
+function runAnalysis(Config $c, string $b, ?Analyzer $a = null, array $old = [], bool $initial = false, bool $full = false, int $now = 0): array
 {
     $changes = array_values(diffByPath($c, $b, $full));
     $new = VersionTracker::read($c);
-    return ($a ?? analyzerFor($c))->analyze($changes, $old, $new, $initial);
+    return ($a ?? analyzerFor($c))->analyze($changes, $old, $new, $initial, $now);
 }
 
 function ruleList(array $r): array
@@ -221,4 +221,42 @@ t('Analyzer: a double-extension PHP file in a theme is never accepted silently',
     $r = runAnalysis($c, $b, null, VersionTracker::read($c));
     assertSame(['double-extension@wp-content/themes/t/evil.php.jpg'], ruleList($r));
     assertTrue(isset($r['hold']['wp-content/themes/t/evil.php.jpg']));
+});
+
+t('Analyzer: files that just arrived are given a grace period before update-explainable findings', function () {
+    [$root, $c, $b] = wpFixture(['lib/old.php' => '<?php // old'], ['update_grace_seconds' => 120]);
+    $old = VersionTracker::read($c);
+    putFile($root, 'wp-includes/tampered.php', 'tampered');
+    putFile($root, 'lib/a.php', '<?php // a');
+    $http = new FakeHttp();
+    coreRoute($http, ['wp-includes/tampered.php' => 'official-new-version']);
+    $analyzer = analyzerFor($c, new WpChecksum($http, $c, tmpdir()));
+
+    // Just arrived: a mid-update checksum mismatch and an unexplained plugin/lib change are deferred, not alerted or accepted.
+    $r = runAnalysis($c, $b, $analyzer, $old, false, false, time());
+    assertSame([], ruleList($r));
+    assertSame(['lib/a.php' => true, 'wp-includes/tampered.php' => true], array_map(function () { return true; }, $r['hold']));
+    assertContains('2 file(s) changed within the last 120', implode("\n", $r['info']));
+
+    // The same state a few minutes later is judged normally.
+    $later = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), $old, false, false, time() + 600);
+    assertSame(['checksum-mismatch@wp-includes/tampered.php', 'unexplained-change@lib'], ruleList($later));
+});
+
+t('Analyzer: the grace period never delays scanner hits or sensitive changes', function () {
+    [$root, $c, $b] = wpFixture([], ['update_grace_seconds' => 120]);
+    putFile($root, 'lib/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    putFile($root, 'wp-content/uploads/x.php', '<?php');
+    bump($root, 'wp-config.php', '<?php // edited by someone', 0);
+    $r = runAnalysis($c, $b, null, VersionTracker::read($c), false, false, time());
+    assertSame(['php-in-uploads@wp-content/uploads/x.php', 'sensitive-file-changed@wp-config.php', 'test-marker@lib/evil.php'], ruleList($r));
+});
+
+t('Analyzer: a zero grace period or no clock disables deferral', function () {
+    [$root, $c, $b] = wpFixture([], ['update_grace_seconds' => 0]);
+    putFile($root, 'lib/a.php', '<?php // a');
+    assertSame(['unexplained-change@lib'], ruleList(runAnalysis($c, $b, null, [], false, false, time())));
+    [$root2, $c2, $b2] = wpFixture([], ['update_grace_seconds' => 120]);
+    putFile($root2, 'lib/a.php', '<?php // a');
+    assertSame(['unexplained-change@lib'], ruleList(runAnalysis($c2, $b2, null, [], false, false, 0)));
 });

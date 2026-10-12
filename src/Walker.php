@@ -43,7 +43,7 @@ final class Walker
         $isDir = ($st['mode'] & 0170000) === 0040000;
         if (!$isDir) {
             if ($rel !== '' && PathOrder::compare($rel, $startAfter) > 0) {
-                yield ['path' => $rel, 'size' => (int)$st['size'], 'mtime' => (int)$st['mtime'], 'mode' => (int)$st['mode'], 'hash' => ''];
+                yield ['path' => $rel, 'size' => (int)$st['size'], 'mtime' => (int)$st['mtime'], 'ctime' => (int)$st['ctime'], 'mode' => (int)$st['mode'], 'hash' => ''];
             }
             return;
         }

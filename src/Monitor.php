@@ -88,7 +88,8 @@ final class Monitor
         $d = (new Differ($this->config))->diff($baselineFile, $startAfter, $budget, $full);
         $oldVersions = $this->state->readJson('versions.json');
         $newVersions = $wpOn ? VersionTracker::read($this->config) : [];
-        $a = $analyzer->analyze($d['changes'], $oldVersions, $newVersions);
+        $now = ($this->clock)();
+        $a = $analyzer->analyze($d['changes'], $oldVersions, $newVersions, false, $now);
 
         $findings = $a['findings'];
         foreach ($d['unreadable'] as $dir) {
@@ -127,7 +128,6 @@ final class Monitor
             $this->state->writeJson('versions.json', $store);
         }
 
-        $now = ($this->clock)();
         $log = new AlertLog($this->state);
         $due = $log->due($findings, $now, $this->config->remindHours * 3600);
         $alertLines = [];

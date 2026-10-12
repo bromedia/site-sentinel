@@ -78,3 +78,11 @@ t('Walker honours watch roots and reports unreadable directories', function () {
     chmod($root . '/locked', 0755);
     assertSame(['locked'], $w->unreadable());
 });
+
+t('Walker records ctime, which an archive extraction cannot backdate', function () {
+    $root = tmpdir();
+    putFile($root, 'extracted.php', '<?php', time() - 86400 * 30);
+    $rec = iterator_to_array((new Walker(makeConfig($root)))->walk(), false)[0];
+    assertTrue($rec['mtime'] < time() - 86400 * 29, 'mtime is old');
+    assertTrue($rec['ctime'] >= time() - 10, 'ctime is when the file arrived');
+});

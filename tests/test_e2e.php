@@ -79,6 +79,18 @@ t('end to end: a WordPress site with the tool installed inside the web root', fu
     assertContains('profile wordpress', $init['out']);
     assertContains('*/10 * * * * php', $init['out']);
 
+    // This test edits files in quick succession; the update grace period (covered by its own tests) would defer them.
+    $cfgJson = json_decode((string)file_get_contents($site . '/sentinel.json'), true);
+    assertSame(120, $cfgJson['update_grace_seconds']);
+    $cfgJson['update_grace_seconds'] = 0;
+    file_put_contents($site . '/sentinel.json', json_encode($cfgJson));
+    // Editing the config is itself a tripwire event until it is accepted.
+    $tamper = sentinel($dist, array_merge(['check'], ['--config=' . $site . '/sentinel.json']));
+    assertSame(1, $tamper['exit']);
+    assertContains('self-tamper', $tamper['out']);
+    assertSame(0, sentinel($dist, ['accept', '--self', '--config=' . $site . '/sentinel.json'])['exit']);
+    unlink($alerts); // forget the tripwire alert so the next assertions start from a clean log
+
     // Everything the tool put inside the web root is invisible to it.
     $clean = sentinel($dist, array_merge(['check'], $cfg));
     assertSame(0, $clean['exit'], $clean['out'] . $clean['err']);

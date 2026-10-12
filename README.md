@@ -62,6 +62,7 @@ Core and repository plugins are verified against wordpress.org checksums, so upd
 | `sensitive` | Files that raise a Warning on any change. |
 | `uploads_dir` | Where PHP must never appear. Set automatically for WordPress. |
 | `budget_seconds`, `budget_memory_mb` | Limits per run. A scan that hits the limit stops and resumes on the next run, so it never hogs a shared host. |
+| `update_grace_seconds` | Files that arrived in the last N seconds (default 120) get no checksum-mismatch or unexplained-change finding yet; they are judged on the next run. This stops a scan that lands in the middle of a WordPress update from raising a false alarm. Malware pattern hits, PHP in uploads and `wp-config.php`/`.htaccess` changes are never delayed. `0` disables it. |
 | `max_scan_bytes` | For files larger than this, the first and last half are scanned (malware is often appended). |
 | `wp_checksums` | Set `false` to stop contacting wordpress.org. |
 | `heartbeat_url` | URL pinged after each completed run. |

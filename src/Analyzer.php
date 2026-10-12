@@ -44,10 +44,13 @@ final class Analyzer
      * @param array[] $changes from Differ::diff
      * @param array<string,string> $oldVersions stored plugin/theme versions
      * @param array<string,string> $newVersions versions currently on disk
+     * @param int $now current unix time; with update_grace_seconds > 0, update-explainable findings for files that arrived within the grace period are deferred (held, not reported). 0 disables deferral
      * @return array{findings: Finding[], info: string[], hold: array<string,bool>, held_groups: array<string,bool>, notes: string[]}
      */
-    public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false): array
+    public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0): array
     {
+        $grace = $this->config->updateGraceSeconds;
+        $deferred = 0;
         $findings = [];
         $info = [];
         $hold = [];
@@ -101,6 +104,14 @@ final class Analyzer
                 $official++;
                 continue;
             }
+            // An update copies many files over a few seconds; a scan that lands mid-copy must not call that tampering.
+            // ctime, not mtime, because extracting an archive restores old mtimes. Scanner hits are never delayed.
+            $fresh = $grace > 0 && $now > 0 && ($now - max((int)$rec['mtime'], (int)($rec['ctime'] ?? 0))) < $grace;
+            if ($fresh && !$hits && ($status === WpChecksum::MISMATCH || $status === WpChecksum::EXTRA) && !$c['stealth']) {
+                $hold[$rel] = true;
+                $deferred++;
+                continue;
+            }
             if ($status === WpChecksum::MISMATCH) {
                 $hits[] = new Finding(Finding::CRITICAL, $rel, 'checksum-mismatch', 'Differs from the official WordPress.org file', $hash);
             } elseif ($status === WpChecksum::EXTRA) {
@@ -130,6 +141,11 @@ final class Analyzer
                 continue;
             }
             if (!$this->config->isCodeFile($rel)) {
+                continue;
+            }
+            if ($fresh) {
+                $hold[$rel] = true;
+                $deferred++;
                 continue;
             }
             $queue[$rel] = $this->config->abs($rel);
@@ -186,6 +202,9 @@ final class Analyzer
         }
         if ($removed > 0) {
             $info[] = sprintf('%d file(s) removed', $removed);
+        }
+        if ($deferred > 0) {
+            $info[] = sprintf('%d file(s) changed within the last %d seconds; they will be judged on the next run', $deferred, $grace);
         }
         $heldGroups = [];
         foreach (array_keys($hold) as $p) {

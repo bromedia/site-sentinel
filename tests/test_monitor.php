@@ -239,3 +239,19 @@ t('Monitor: an unusable lock file is an error with an alert, not a silent skip',
     assertSame(1, count($n->sent));
     assertContains('run-error', $n->sent[0]['body']);
 });
+
+t('Monitor: a change that just arrived is deferred, then judged on a later run', function () {
+    [$root, , , $m, $n, , $clock] = monitorFixture(['lib/a.php' => '<?php // a'], ['update_grace_seconds' => 120]);
+    $clock->t = time();
+    bump($root, 'lib/a.php', '<?php // a edited', 0);
+    $r = $m->run('check');
+    assertSame(0, $r['exit']);
+    assertSame(0, count($n->sent), 'no alert while the files may still be arriving');
+    assertContains('1 change(s)', $r['lines'][0], 'and not accepted into the baseline either');
+
+    $clock->t = time() + 600;
+    $r2 = $m->run('check');
+    assertSame(1, $r2['exit']);
+    assertSame(1, count($n->sent));
+    assertContains('unexplained-change', $n->sent[0]['body']);
+});

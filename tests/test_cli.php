@@ -116,7 +116,9 @@ t('After init a check is clean, and accept makes held changes known-good', funct
     $state = new State($config->stateDir);
     $notifier = new FakeNotifier();
     $selfFiles = ['script' => $tool . '/sentinel.php', 'config' => $tool . '/sentinel.json', 'rules' => $state->path('rules.json')];
-    $m = new Monitor($config, $state, new FakeHttp(), [new Channel($notifier, Finding::WARNING)], $selfFiles, new FakeClock());
+    $clock = new FakeClock();
+    $clock->t = time() + 3600; // well past the default update grace period of every file this test touches
+    $m = new Monitor($config, $state, new FakeHttp(), [new Channel($notifier, Finding::WARNING)], $selfFiles, $clock);
     assertSame(0, $m->run('check')['exit']);
 
     bump($site, 'lib/a.php', '<?php // a edited');

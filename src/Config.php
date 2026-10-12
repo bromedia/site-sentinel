@@ -29,6 +29,7 @@ final class Config
     public $budgetMemoryMb = 128;
     public $maxScanBytes = 2097152;
     public $remindHours = 24;
+    public $updateGraceSeconds = 120;
     public $wpChecksums = true;
     public $heartbeatUrl = '';
     public $rulesUrl = '';
@@ -91,6 +92,7 @@ final class Config
         $c->budgetMemoryMb = self::int($raw, 'budget_memory_mb', 128);
         $c->maxScanBytes = self::int($raw, 'max_scan_bytes', 2097152);
         $c->remindHours = self::int($raw, 'remind_hours', 24);
+        $c->updateGraceSeconds = self::int($raw, 'update_grace_seconds', 120, 0);
         $c->wpChecksums = (bool)($raw['wp_checksums'] ?? true);
         $c->heartbeatUrl = self::url($raw, 'heartbeat_url');
         $c->rulesUrl = self::url($raw, 'rules_url');
@@ -120,6 +122,7 @@ final class Config
             'budget_memory_mb' => $this->budgetMemoryMb,
             'max_scan_bytes' => $this->maxScanBytes,
             'remind_hours' => $this->remindHours,
+            'update_grace_seconds' => $this->updateGraceSeconds,
             'wp_checksums' => $this->wpChecksums,
             'heartbeat_url' => $this->heartbeatUrl,
             'rules_url' => $this->rulesUrl,
@@ -228,11 +231,11 @@ final class Config
         return array_values(array_map('strval', (array)$v));
     }
 
-    private static function int(array $raw, string $key, int $default): int
+    private static function int(array $raw, string $key, int $default, int $min = 1): int
     {
         $v = (int)($raw[$key] ?? $default);
-        if ($v < 1) {
-            throw new ConfigException("$key must be a positive integer");
+        if ($v < $min) {
+            throw new ConfigException($min === 0 ? "$key must be zero or a positive integer" : "$key must be a positive integer");
         }
         return $v;
     }

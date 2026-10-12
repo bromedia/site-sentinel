@@ -10,6 +10,7 @@ function makeConfig(string $root, array $extra = []): \Sentinel\Config
         'site_root' => $root,
         'state_dir' => $state,
         'profile' => 'generic',
+        'update_grace_seconds' => 0, // tests opt in to the grace period explicitly
         'channels' => [['type' => 'file', 'path' => $state . '/alerts.log']],
     ], $extra));
 }

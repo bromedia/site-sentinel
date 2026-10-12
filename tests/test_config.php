@@ -104,3 +104,12 @@ t('Config treats any PHP extension in the name chain as code (double extensions)
     assertTrue(!$c->isCodeFile('README'));
     assertTrue($c->isCodeFile('x/.htaccess'));
 });
+
+t('Config has an update grace period that defaults to 120 seconds and can be disabled', function () {
+    $root = tmpdir();
+    $base = ['site_name' => 'x', 'site_root' => $root, 'state_dir' => $root . '/s', 'profile' => 'generic'];
+    assertSame(120, Config::fromArray($base)->updateGraceSeconds);
+    assertSame(0, Config::fromArray($base + ['update_grace_seconds' => 0])->updateGraceSeconds);
+    assertSame(30, Config::fromArray(Config::fromArray($base + ['update_grace_seconds' => 30])->toArray())->updateGraceSeconds);
+    assertThrows(ConfigException::class, function () use ($base) { Config::fromArray($base + ['update_grace_seconds' => -5]); });
+});
