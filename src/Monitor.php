@@ -41,7 +41,11 @@ final class Monitor
         if (!$this->channels) {
             return ['exit' => 2, 'lines' => ['no alert channels configured: add one to the config, then run test-alert']];
         }
-        $lock = Lock::acquire($this->state->path('lock'));
+        try {
+            $lock = Lock::acquire($this->state->path('lock'));
+        } catch (\Throwable $e) {
+            return $this->failed($e);
+        }
         if ($lock === null) {
             return ['exit' => 0, 'lines' => ['another run is in progress; skipping']];
         }

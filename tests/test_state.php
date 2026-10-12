@@ -108,3 +108,11 @@ t('SelfCheck records on first use, then flags changed or missing tool files', fu
     file_put_contents($state->path('rules.json'), '{"version":2}');
     assertSame(1, count($sc->check()));
 });
+
+t('Lock::acquire throws when the lock file cannot be opened, instead of looking busy', function () {
+    $dir = tmpdir();
+    mkdir($dir . '/lock'); // a directory where the lock file should be
+    assertThrows(RuntimeException::class, function () use ($dir) {
+        Lock::acquire($dir . '/lock');
+    });
+});

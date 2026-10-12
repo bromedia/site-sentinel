@@ -228,3 +228,14 @@ t('Monitor: an unreadable directory is reported', function () {
     assertSame(1, $r['exit']);
     assertContains('unreadable-dir', $n->sent[0]['body']);
 });
+
+t('Monitor: an unusable lock file is an error with an alert, not a silent skip', function () {
+    [$root, , $state, $m, $n] = monitorFixture();
+    putFile($root, 'evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    mkdir($state->path('lock')); // the lock path is now a directory
+    $r = $m->run('check');
+    assertSame(2, $r['exit']);
+    assertContains('lock', implode("\n", $r['lines']));
+    assertSame(1, count($n->sent));
+    assertContains('run-error', $n->sent[0]['body']);
+});
