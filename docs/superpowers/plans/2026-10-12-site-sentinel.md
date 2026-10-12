@@ -6442,7 +6442,10 @@ $root = dirname(__DIR__);
 $files = require __DIR__ . '/files.php';
 $version = trim((string)file_get_contents($root . '/VERSION'));
 
-$out = "<?php\ndeclare(strict_types=1);\n\nnamespace Sentinel;\n\n"
+$out = "<?php\ndeclare(strict_types=1);\n\n"
+    . "// Site Sentinel " . $version . " - file-integrity and malware monitor.\n"
+    . "// License: GPL-3.0-or-later. See LICENSE in the source repository. No warranty.\n\n"
+    . "namespace Sentinel;\n\n"
     . 'const VERSION = ' . var_export($version, true) . ";\n\n"
     . "// Never run through a web server, even if the file is dropped into a web root.\n"
     . "if (PHP_SAPI !== 'cli') {\n    http_response_code(404);\n    exit;\n}\n";
@@ -6635,6 +6638,10 @@ php build/build.php          # produce dist/sentinel.php
 ```
 
 Tests need no Composer or framework. Source is in `src/` (one class per file, listed in `build/files.php`); `build/build.php` concatenates it into the single distributable.
+
+## License
+
+Site Sentinel is free software, released under the GNU General Public License, version 3 or (at your option) any later version. See `LICENSE`. It comes with no warranty. Rule bundles keep the licenses of their sources (see `docs/RULES.md`).
 ````
 
 ````markdown file=docs/RULES.md
@@ -6701,9 +6708,9 @@ rm -rf /tmp/sentinel-demo
 ```
 Expected: `init` prints cron lines; `check` prints a CRITICAL `test-marker` line and `exit=1`; `alerts.log` holds one digest naming `dropper.php`.
 
-- [ ] **Step 8: Before publishing: choose the license**
+- [ ] **Step 8: License (decided: GPL-3.0-or-later)**
 
-Add a `LICENSE` file once Conor has chosen one (MIT is permissive and the usual choice for a tool clients install; GPL-3.0 would require derivative works to stay open). Record the choice in the README. Do not publish the repository without one; until a license exists nobody else may legally use or modify the code.
+`LICENSE` (the verbatim GNU GPL v3 text) is already in the repository. Confirm the `README.md` from Step 5 ends with the `## License` section, and that the build output header carries the notice (Step 3 adds it). Nothing else is needed; the project is free software and not sold. Rule data keeps its own licenses (see `docs/RULES.md`); note that GPL-2.0-only rule sources such as some maldet signatures are not compatible with a GPL-3.0 distribution, so check each source before bundling it.
 
 - [ ] **Step 9: Commit**
 
