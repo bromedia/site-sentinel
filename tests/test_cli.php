@@ -198,3 +198,48 @@ t('Cli reports usage errors, missing config and versions', function () {
     assertSame(2, $noConfig['exit']);
     assertContains('cannot read config', implode("\n", $noConfig['err']));
 });
+
+/** Initialises a site through the CLI and returns [script, configFile, alertsLog, config JSON as array]. */
+function cliSite(array $configPatch = []): array
+{
+    [$site, $tool, , $alerts] = initFixture(['index.php' => '<?php']);
+    $script = $tool . '/sentinel.php';
+    $init = Cli::execute(['init', '--root=' . $site, '--file=' . $alerts, '--no-wp-checksums'], $script, new FakeHttp());
+    assertSame(0, $init['exit'], implode("\n", $init['err']));
+    $cfg = json_decode((string)file_get_contents($tool . '/sentinel.json'), true);
+    $cfg = array_merge($cfg, $configPatch);
+    file_put_contents($tool . '/sentinel.json', json_encode($cfg));
+    return [$script, $tool . '/sentinel.json', $alerts];
+}
+
+t('update-rules: a download failure raises a Warning alert, deduplicated', function () {
+    [$script, $config, $alerts] = cliSite(['rules_url' => 'https://rules.example/rules.json', 'allow_unsigned_rules' => true]);
+    $r = Cli::execute(['update-rules', '--config=' . $config], $script, new FakeHttp());
+    assertSame(2, $r['exit']);
+    $log = (string)file_get_contents($alerts);
+    assertContains('[Sentinel][WARNING]', $log);
+    assertContains('rules update failed', $log);
+    Cli::execute(['update-rules', '--config=' . $config], $script, new FakeHttp());
+    assertSame(1, substr_count((string)file_get_contents($alerts), 'rules update failed'), 'the same failure alerts once');
+});
+
+t('update-rules: a verification failure raises a Critical alert and installs nothing', function () {
+    [$script, $config, $alerts] = cliSite(['rules_url' => 'https://rules.example/rules.json', 'allow_unsigned_rules' => true]);
+    $http = new FakeHttp();
+    $http->route('https://rules.example/rules.json.sha256', 200, str_repeat('0', 64) . "  rules.json\n");
+    $http->route('https://rules.example/rules.json', 200, json_encode(['version' => 1, 'patterns' => []]));
+    $r = Cli::execute(['update-rules', '--config=' . $config], $script, $http);
+    assertSame(2, $r['exit']);
+    $log = (string)file_get_contents($alerts);
+    assertContains('[Sentinel][CRITICAL]', $log);
+    assertContains('rules checksum mismatch', $log);
+    assertTrue(!is_file(dirname($config) . '/sentinel-state/rules.json'));
+});
+
+t('update-rules: running it without a rules_url is a usage error, not an alert', function () {
+    [$script, $config, $alerts] = cliSite();
+    $r = Cli::execute(['update-rules', '--config=' . $config], $script, new FakeHttp());
+    assertSame(2, $r['exit']);
+    assertContains('rules_url', implode("\n", $r['err']));
+    assertTrue(!is_file($alerts), 'no alert for a missing setting');
+});

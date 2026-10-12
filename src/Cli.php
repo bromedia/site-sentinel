@@ -103,8 +103,18 @@ TXT;
                 case 'accept':
                     return self::result(Accept::run($config, $state, (array)($opts['path'] ?? []), !empty($opts['self']), $selfFiles));
                 case 'update-rules':
-                    $lines = (new RulesUpdater($config, $state, $http, new SelfCheck($state, $selfFiles)))->update();
-                    return ['exit' => 0, 'out' => $lines, 'err' => []];
+                    if ($config->rulesUrl === '') {
+                        return ['exit' => 2, 'out' => [], 'err' => ['error: rules_url is not set in the config; set it to the address of a rules.json bundle']];
+                    }
+                    try {
+                        $lines = (new RulesUpdater($config, $state, $http, new SelfCheck($state, $selfFiles)))->update();
+                        return ['exit' => 0, 'out' => $lines, 'err' => []];
+                    } catch (\Throwable $e) {
+                        // A rules update that cannot be trusted must not fail silently from a cron job.
+                        $severity = $e instanceof RulesFetchException ? Finding::WARNING : Finding::CRITICAL;
+                        $sent = (new Monitor($config, $state, $http, $channels, $selfFiles))->reportError('rules update failed: ' . $e->getMessage(), $severity);
+                        return ['exit' => 2, 'out' => [], 'err' => array_merge(['error: ' . $e->getMessage()], $sent)];
+                    }
                 default:
                     return self::testAlert($config, $channels);
             }

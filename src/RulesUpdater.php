@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 namespace Sentinel;
 
+/** The bundle or its signature could not be downloaded (as opposed to failing verification). */
+final class RulesFetchException extends \RuntimeException
+{
+}
+
 final class RulesUpdater
 {
     private $config;
@@ -91,7 +96,7 @@ final class RulesUpdater
     {
         $r = $this->http->request('GET', $url, '', [], 30);
         if ($r['status'] !== 200) {
-            throw new \RuntimeException(sprintf('could not download the %s (%s)', $what, $r['status'] === 0 ? 'network error' : 'HTTP ' . $r['status']));
+            throw new RulesFetchException(sprintf('could not download the %s (%s)', $what, $r['status'] === 0 ? 'network error' : 'HTTP ' . $r['status']));
         }
         return $r['body'];
     }

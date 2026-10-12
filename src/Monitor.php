@@ -179,11 +179,20 @@ final class Monitor
 
     private function failed(\Throwable $e): array
     {
-        $msg = $e->getMessage();
-        $lines = ['error: ' . $msg];
+        return ['exit' => 2, 'lines' => array_merge(['error: ' . $e->getMessage()], $this->reportError($e->getMessage()))];
+    }
+
+    /**
+     * Alerts about a tool error (deduplicated by message) so that a monitor that cannot do its job is never silent.
+     *
+     * @return string[] output lines describing what was sent
+     */
+    public function reportError(string $message, int $severity = Finding::CRITICAL): array
+    {
+        $lines = [];
         try {
             $now = ($this->clock)();
-            $f = new Finding(Finding::CRITICAL, 'sentinel', 'run-error', $msg, sha1($msg));
+            $f = new Finding($severity, 'sentinel', 'run-error', $message, sha1($message));
             $log = new AlertLog($this->state);
             $due = $log->due([$f], $now, $this->config->remindHours * 3600);
             $sent = [];
@@ -201,6 +210,6 @@ final class Monitor
         } catch (\Throwable $inner) {
             $lines[] = 'could not send the error alert: ' . $inner->getMessage();
         }
-        return ['exit' => 2, 'lines' => $lines];
+        return $lines;
     }
 }
