@@ -9,4 +9,5 @@ return [
     'Profile.php',
     'Config.php',
     'Baseline.php',
+    'Walker.php',
 ];
