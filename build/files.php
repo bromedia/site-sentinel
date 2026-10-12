@@ -17,4 +17,6 @@ return [
     'PatternScanner.php',
     'LocationScanner.php',
     'HttpClient.php',
+    'VersionTracker.php',
+    'WpChecksum.php',
 ];
