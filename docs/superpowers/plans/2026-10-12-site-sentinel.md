@@ -6718,3 +6718,18 @@ Expected: `init` prints cron lines; `check` prints a CRITICAL `test-marker` line
 git add build/build.php tests/test_e2e.php examples README.md docs/RULES.md
 git commit -m "feat: single-file build, end-to-end tests, examples and docs"
 ```
+
+---
+
+## Changes made after the final review
+
+The plan above was executed as written and then reviewed as a whole. The review found these defects, fixed in the commits after Task 17; where the code and this document disagree, the code is right.
+
+- **Task 9:** the plan assumed the plugin-checksums API returned top-level `sha256`/`md5` maps. The real endpoint returns `files => path => {md5, sha256}`. An unrecognised shape is now "unknown" plus a note. (The core-checksums shape in the plan was correct.)
+- **Tasks 3 and 7:** a PHP extension anywhere in a file name (`evil.php.jpg`) makes it code (`Config::PHP_EXT`); outside uploads it is a `double-extension` Warning; PHP appended to an existing media file in uploads is Critical, not only for new files.
+- **Task 10:** with `proc_open` disabled (common on shared hosts) ClamAV/YARA are skipped with a note instead of crashing.
+- **Task 7:** a rule whose regex fails at run time (backtrack or JIT limit) produces a `scan-error` Warning instead of counting as "no match".
+- **Task 12:** an unopenable lock file is an error (exit 2, alert), no longer a silent "another run in progress".
+- **Task 16:** `init` writes the config only after the scan passes, so a refused init leaves nothing behind; it lists symlinked directories, which are not followed.
+- **Task 15:** a failed or unverifiable `update-rules` alerts (Warning for download failures, Critical for verification failures); `Monitor::reportError()` is the shared path.
+- **Tasks 6, 11, 14:** `update_grace_seconds` (default 120) defers checksum-mismatch and unexplained-change findings for files that arrived within the grace period (judged by ctime), so a scan during a WordPress update does not raise false alarms. Scanner hits are never delayed.
