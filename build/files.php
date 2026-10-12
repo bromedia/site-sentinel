@@ -8,4 +8,5 @@ return [
     'PathFilter.php',
     'Profile.php',
     'Config.php',
+    'Baseline.php',
 ];
