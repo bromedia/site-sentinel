@@ -22,4 +22,8 @@ return [
     'Proc.php',
     'ExternalScanner.php',
     'Analyzer.php',
+    'State.php',
+    'Lock.php',
+    'AlertLog.php',
+    'SelfCheck.php',
 ];
