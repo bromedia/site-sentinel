@@ -93,3 +93,14 @@ t('Config::load reads JSON and reports unreadable or invalid files', function ()
     file_put_contents($dir . '/bad.json', '{nope');
     assertThrows(ConfigException::class, function () use ($dir) { Config::load($dir . '/bad.json'); });
 });
+
+t('Config treats any PHP extension in the name chain as code (double extensions)', function () {
+    $c = makeConfig(tmpdir());
+    assertTrue($c->isCodeFile('wp-content/themes/t/evil.php.jpg'));
+    assertTrue($c->isCodeFile('x/shell.PHTML.png'));
+    assertTrue($c->isCodeFile('backup.php.bak'));
+    assertTrue(!$c->isCodeFile('archive.tar.gz'));
+    assertTrue(!$c->isCodeFile('photo.jpeg'));
+    assertTrue(!$c->isCodeFile('README'));
+    assertTrue($c->isCodeFile('x/.htaccess'));
+});

@@ -5,7 +5,6 @@ namespace Sentinel;
 
 final class LocationScanner
 {
-    private const PHP_EXT = ['php', 'php3', 'php4', 'php5', 'php7', 'php8', 'phtml', 'pht', 'phar', 'phps'];
     private const MEDIA_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'ico', 'bmp'];
 
     private $config;
@@ -30,14 +29,18 @@ final class LocationScanner
         $isMedia = in_array($ext, self::MEDIA_EXT, true);
 
         if ($this->config->isUploads($rel)) {
-            if (array_intersect($parts, self::PHP_EXT)) {
+            if (array_intersect($parts, Config::PHP_EXT)) {
                 $out[] = new Finding(Finding::CRITICAL, $rel, 'php-in-uploads', 'PHP file in the uploads directory', $hash);
-            } elseif ($isNew && $isMedia && $this->hasPhpTag($this->config->abs($rel))) {
+            } elseif ($isMedia && $this->hasPhpTag($this->config->abs($rel))) {
                 $out[] = new Finding(Finding::CRITICAL, $rel, 'php-in-media', 'Media file containing PHP code', $hash);
             }
             if ($isNew && ($base === '.htaccess' || $base === '.user.ini')) {
                 $out[] = new Finding(Finding::WARNING, $rel, 'config-in-uploads', 'Server configuration file in the uploads directory', $hash);
             }
+        }
+
+        if (!$this->config->isUploads($rel) && array_intersect(array_slice($parts, 0, -1), Config::PHP_EXT) && !in_array($ext, Config::PHP_EXT, true)) {
+            $out[] = new Finding(Finding::WARNING, $rel, 'double-extension', 'PHP extension hidden before another extension (e.g. shell.php.jpg)', $hash);
         }
 
         if ($isNew && !$isMedia && ($record['mode'] & 0111) !== 0 && $this->inTemp($rel)) {

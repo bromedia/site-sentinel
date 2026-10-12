@@ -40,7 +40,7 @@ Exit codes: `0` clean, `1` findings reported, `2` tool error.
 ## What it reports
 
 - **Critical:** known malware patterns or hashes (built in, plus anything from ClamAV/YARA if installed), PHP files in `wp-content/uploads` (including `shell.php.jpg`), PHP code hidden inside images, a WordPress core or repository-plugin file that does not match wordpress.org's official checksum, an executable newly created in a `tmp` directory, content changed while size and timestamp were left alone, and any change to Sentinel's own files.
-- **Warning:** new or modified code that is not explained by an update, changes to `wp-config.php`, `.htaccess` or `mu-plugins`, new symlinks, files that became world-writable, removed core files.
+- **Warning:** new or modified code that is not explained by an update, a PHP extension hidden before another one anywhere (`evil.php.jpg`), changes to `wp-config.php`, `.htaccess` or `mu-plugins`, new symlinks, files that became world-writable, removed core files.
 - **Info:** things that were explained and accepted automatically (a plugin updated from 1.0 to 1.1, files verified against official checksums). Info appears in the next alert that is sent anyway; it never sends one by itself.
 
 Each problem alerts once, and Critical problems remind you every `remind_hours` (default 24) until fixed or accepted. Held changes stay out of the baseline, so they keep showing in `check` output until you run `accept`.

@@ -11,6 +11,8 @@ final class Config
 {
     public const PROFILES = ['wordpress', 'generic'];
     public const CHANNEL_TYPES = ['email', 'ntfy', 'telegram', 'webhook', 'file'];
+    /** Extensions a web server may run as PHP; anywhere in a file name's extension chain they make it code. */
+    public const PHP_EXT = ['php', 'php3', 'php4', 'php5', 'php7', 'php8', 'phtml', 'pht', 'phar', 'phps'];
 
     public $siteName = '';
     public $profile = 'generic';
@@ -164,7 +166,14 @@ final class Config
         if (in_array($base, ['.htaccess', '.user.ini', 'php.ini'], true)) {
             return true;
         }
-        return in_array(strtolower(pathinfo($base, PATHINFO_EXTENSION)), $this->codeExtensions, true);
+        $parts = explode('.', $base);
+        array_shift($parts);
+        foreach ($parts as $p) {
+            if (in_array($p, self::PHP_EXT, true)) {
+                return true;
+            }
+        }
+        return $parts && in_array(end($parts), $this->codeExtensions, true);
     }
 
     public function isUploads(string $rel): bool

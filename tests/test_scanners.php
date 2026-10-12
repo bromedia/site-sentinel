@@ -124,7 +124,10 @@ t('LocationScanner finds PHP hidden in new media and config files in uploads', f
     $s = new LocationScanner($c);
     assertSame(['php-in-media'], rulesOf($s->scan('wp-content/uploads/head.jpg', lrec($root, 'wp-content/uploads/head.jpg'), true)));
     assertSame(['php-in-media'], rulesOf($s->scan('wp-content/uploads/tail.png', lrec($root, 'wp-content/uploads/tail.png'), true)));
-    assertSame([], $s->scan('wp-content/uploads/head.jpg', lrec($root, 'wp-content/uploads/head.jpg'), false));
+    // An existing image that later gains PHP code is just as dangerous as a new one.
+    assertSame(['php-in-media'], rulesOf($s->scan('wp-content/uploads/head.jpg', lrec($root, 'wp-content/uploads/head.jpg'), false)));
+    putFile($root, 'wp-content/uploads/clean.jpg', "\xFF\xD8 just an image");
+    assertSame([], $s->scan('wp-content/uploads/clean.jpg', lrec($root, 'wp-content/uploads/clean.jpg'), false));
     $f = $s->scan('wp-content/uploads/.htaccess', lrec($root, 'wp-content/uploads/.htaccess'), true);
     assertSame(['config-in-uploads'], rulesOf($f));
     assertSame(Finding::WARNING, $f[0]->severity);
@@ -147,4 +150,18 @@ t('LocationScanner flags new executables in temp paths and ignores symlinks', fu
 
     symlink($x, $root . '/tmp/link');
     assertSame([], $s->scan('tmp/link', lrec($root, 'tmp/link'), true));
+});
+
+t('LocationScanner flags a PHP extension hidden before a media extension outside uploads', function () {
+    $root = tmpdir();
+    $c = makeConfig($root);
+    putFile($root, 'themes/t/evil.php.jpg', 'x');
+    putFile($root, 'themes/t/ok.php', '<?php');
+    putFile($root, 'themes/t/photo.jpg', 'x');
+    $s = new LocationScanner($c);
+    $f = $s->scan('themes/t/evil.php.jpg', lrec($root, 'themes/t/evil.php.jpg'), true);
+    assertSame(['double-extension'], rulesOf($f));
+    assertSame(Finding::WARNING, $f[0]->severity);
+    assertSame([], $s->scan('themes/t/ok.php', lrec($root, 'themes/t/ok.php'), true));
+    assertSame([], $s->scan('themes/t/photo.jpg', lrec($root, 'themes/t/photo.jpg'), true));
 });

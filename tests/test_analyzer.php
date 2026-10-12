@@ -214,3 +214,11 @@ t('Analyzer: unreadable files and initial-scan wants', function () {
     chmod($f, 0644);
     assertSame(['unreadable@lib/locked.php'], ruleList($r));
 });
+
+t('Analyzer: a double-extension PHP file in a theme is never accepted silently', function () {
+    [$root, $c, $b] = wpFixture();
+    putFile($root, 'wp-content/themes/t/evil.php.jpg', 'GIF89a');
+    $r = runAnalysis($c, $b, null, VersionTracker::read($c));
+    assertSame(['double-extension@wp-content/themes/t/evil.php.jpg'], ruleList($r));
+    assertTrue(isset($r['hold']['wp-content/themes/t/evil.php.jpg']));
+});
