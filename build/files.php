@@ -1,0 +1,38 @@
+<?php
+declare(strict_types=1);
+
+// Ordered list of src/ files. Interfaces must precede their implementers.
+// Each task that adds a source file appends its name here.
+return [
+    'PathOrder.php',
+    'PathFilter.php',
+    'Profile.php',
+    'Config.php',
+    'Baseline.php',
+    'Walker.php',
+    'Budget.php',
+    'Differ.php',
+    'Finding.php',
+    'Rules.php',
+    'PatternScanner.php',
+    'LocationScanner.php',
+    'HttpClient.php',
+    'VersionTracker.php',
+    'WpChecksum.php',
+    'Proc.php',
+    'ExternalScanner.php',
+    'Analyzer.php',
+    'State.php',
+    'Lock.php',
+    'AlertLog.php',
+    'SelfCheck.php',
+    'Notifier.php',
+    'Notifiers.php',
+    'Alerter.php',
+    'Digest.php',
+    'Monitor.php',
+    'RulesUpdater.php',
+    'Init.php',
+    'Accept.php',
+    'Cli.php',
+];

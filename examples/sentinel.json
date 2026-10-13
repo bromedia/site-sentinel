@@ -1,0 +1,18 @@
+{
+    "site_name": "Example Client",
+    "profile": "wordpress",
+    "site_root": "/home/example/public_html",
+    "state_dir": "/home/example/sentinel-state",
+    "channels": [
+        { "type": "email", "to": ["owner@example.com"], "from": "sentinel@example.com" },
+        { "type": "ntfy", "url": "https://ntfy.sh/replace-with-a-long-random-topic", "min_severity": "critical" },
+        { "type": "webhook", "url": "https://hooks.example.com/sentinel", "min_severity": "warning" }
+    ],
+    "heartbeat_url": "https://hc-ping.com/replace-with-your-uuid",
+    "rules_url": "",
+    "rules_public_key": "",
+    "allow_unsigned_rules": false,
+    "wp_checksums": true,
+    "budget_seconds": 50,
+    "remind_hours": 24
+}

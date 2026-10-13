@@ -1,0 +1,9 @@
+[Unit]
+Description=Site Sentinel full scan
+
+[Service]
+Type=oneshot
+User=www-data
+ExecStart=/usr/bin/php /opt/sentinel/sentinel.php full --config=/opt/sentinel/sentinel.json
+Nice=19
+IOSchedulingClass=idle
