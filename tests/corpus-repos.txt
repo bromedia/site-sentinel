@@ -1,0 +1,16 @@
+# Legitimate code the built-in rules must stay silent on (false-positive corpus).
+# name  url  commit  [sparse paths...]
+wordpress https://github.com/WordPress/WordPress.git cc9dc9cf55679637a2ed262709e2c6ee971351c6
+elementor https://github.com/elementor/elementor.git 5b2f8db34ac296683959093284dd0f6c4b9be58b
+wordpress-seo https://github.com/Yoast/wordpress-seo.git f5360f0185d849ec2bebb437054269ed96c66633
+woocommerce https://github.com/woocommerce/woocommerce.git f86d92f6add6f5c2a8fdbd75c345b937b0a4cbf7 plugins/woocommerce/src plugins/woocommerce/includes plugins/woocommerce/templates plugins/woocommerce/lib
+contact-form-7 https://github.com/takayukister/contact-form-7.git befef550204ed43ab76757b180a8d13c6fce2cc0
+wp-super-cache https://github.com/Automattic/wp-super-cache.git 257e1ae5895f0b788e43ff513fdb425080f43428
+action-scheduler https://github.com/woocommerce/action-scheduler.git 3a8178faa44f5b6dc2c7e56eb4a0195f80f86c64
+wordpress-importer https://github.com/WordPress/wordpress-importer.git 2fd6589b4db2e1551ea7826f1ebe2dcc3db9f362
+mpdf https://github.com/mpdf/mpdf.git a981bb7b9e31bb17775a21efae612bb4bb50012e
+TCPDF https://github.com/tecnickcom/TCPDF.git c60c7bd8ed0923a09424b2a8d9e9d17a2401c785
+dompdf https://github.com/dompdf/dompdf.git c41f2f4871f130386118575564f95cd12a7c6aae
+phpseclib https://github.com/phpseclib/phpseclib.git 608de155deeeb481bc50d552f8326fd0e6306155
+htmlpurifier https://github.com/ezyang/htmlpurifier.git e1272475a5114786626c9db44d961f1769443c4b
+PHPMailer https://github.com/PHPMailer/PHPMailer.git 55e2a9434f041db55d047cbc52c3000ae597a97f

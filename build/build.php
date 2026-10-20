@@ -5,12 +5,18 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 $files = require __DIR__ . '/files.php';
 $version = trim((string)file_get_contents($root . '/VERSION'));
+$builtinRules = (string)file_get_contents($root . '/rules/builtin.json');
+if (!is_array(json_decode($builtinRules, true))) {
+    fwrite(STDERR, "rules/builtin.json is missing or invalid (run php rules/generate.php)\n");
+    exit(1);
+}
 
 $out = "<?php\ndeclare(strict_types=1);\n\n"
     . "// Site Sentinel " . $version . " - file-integrity and malware monitor.\n"
     . "// License: GPL-3.0-or-later. See LICENSE in the source repository. No warranty.\n\n"
     . "namespace Sentinel;\n\n"
-    . 'const VERSION = ' . var_export($version, true) . ";\n\n"
+    . 'const VERSION = ' . var_export($version, true) . ";\n"
+    . 'const BUILTIN_RULES = ' . var_export($builtinRules, true) . ";\n\n"
     . "// Never run through a web server, even if the file is dropped into a web root. Some hosts start\n"
     . "// cron jobs with a CGI build of PHP, so refuse actual web requests rather than every non-CLI SAPI.\n"
     . "if (PHP_SAPI !== 'cli' && (isset(\$_SERVER['REQUEST_METHOD']) || isset(\$_SERVER['GATEWAY_INTERFACE']) || PHP_SAPI === 'apache2handler' || PHP_SAPI === 'fpm-fcgi')) {\n    http_response_code(404);\n    exit;\n}\n";

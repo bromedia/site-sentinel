@@ -1,0 +1,3 @@
+# Known matches in legitimate code, accepted with a reason: rule <TAB> path ending <TAB> reason
+hardcoded-user	elementor/tests/phpunit/elementor/modules/components/test-components-rest-api.php	test suite creates a user with a literal password; real backdoors look the same, so the rule stays
+hardcoded-user-password	elementor/tests/phpunit/elementor/modules/editor-one/test-elementor-one-menu-manager-edit-posts-users.php	test suite, as above

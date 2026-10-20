@@ -48,3 +48,16 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  false-positives:
+    # The built-in rules must stay silent on WordPress and popular plugins (pinned in tests/corpus-repos.txt).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.3'
+          coverage: none
+      - name: Fetch the corpus
+        run: sh tests/fetch-corpus.sh "$RUNNER_TEMP/corpus"
+      - name: Scan it
+        run: php tests/corpus.php "$RUNNER_TEMP"/corpus/*/
