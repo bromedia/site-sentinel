@@ -8,7 +8,7 @@ email = you@example.com
 website = My website
 
 # 3. Who people should contact when an alert arrives. Shown in every alert.
-contact = Bro Media
+contact = Bro Media (info@bromedia.co.za)
 
 # 4. Updates to bought plugins and themes (for example Avada or Divi): yes or no
 #    yes: accepted automatically. Fewer emails, but a hacker who changes those files and also

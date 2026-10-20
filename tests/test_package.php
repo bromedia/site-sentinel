@@ -110,7 +110,7 @@ t('Config::load resolves relative paths against the config file and applies sett
     assertSame(realpath($www), $c->siteRoot, 'public_html is followed to the real web root');
     assertSame($dir . '/state', $c->stateDir);
     assertSame('My website', $c->siteName);
-    assertSame('Bro Media', $c->contact);
+    assertSame('Bro Media (info@bromedia.co.za)', $c->contact);
     assertSame('client', $c->audience);
     assertSame(true, $c->autoAcceptUnverifiedUpdates, 'the package default is visible in settings.txt');
     assertSame('wordpress', $c->profile);
@@ -243,7 +243,7 @@ t('Client alerts are plain language with the contact, no commands, technical det
     $m = end($mail->sent);
     assertSame('Security alert: My website may have been hacked', $m['subject']);
     assertContains("POSSIBLE HACK", $m['body']);
-    assertContains('contact Bro Media today', $m['body']);
+    assertContains('contact Bro Media (info@bromedia.co.za) today', $m['body']);
     assertContains('WEBSITE FILES CHANGED', $m['body']);
     assertNotContains('php sentinel.php', $m['body']);
     assertContains('Technical details for your web developer', $m['body']);
