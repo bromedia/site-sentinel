@@ -21,6 +21,7 @@ final class Init
         $configFile = (string)($o['config'] ?? $dir . '/sentinel.json');
         $stateDir = (string)($o['state'] ?? $dir . '/sentinel-state');
         $force = !empty($o['force']);
+        $cron = Cron::lines($script, $configFile);
         if (is_file($configFile) && !$force) {
             return self::fail("$configFile already exists; use --force to overwrite it");
         }
@@ -129,6 +130,7 @@ final class Init
         (new SelfCheck($state, $selfFiles))->record();
         (new AlertLog($state))->clear();
         @unlink($state->path('resume.json'));
+        $state->writeJson('status.json', []);
 
         $lines[] = sprintf('Created %s (profile %s) and a baseline of %d file(s).', $configFile, $config->profile, $count);
         foreach ($findings as $f) {
@@ -142,13 +144,11 @@ final class Init
         }
         $lines[] = '';
         $lines[] = 'Add these lines to the crontab of the account that owns the site (crontab -e, or cPanel > Cron Jobs):';
-        $lines[] = '*/10 * * * * php ' . $script . ' check --config=' . $configFile . ' >/dev/null 2>&1';
-        $lines[] = '17 3 * * * php ' . $script . ' full --config=' . $configFile . ' >/dev/null 2>&1';
-        $lines[] = '# optional, once a rules_url is configured:';
-        $lines[] = '# 41 4 * * 1 php ' . $script . ' update-rules --config=' . $configFile . ' >/dev/null 2>&1';
+        $lines = array_merge($lines, $cron);
         $lines[] = '';
-        $lines[] = 'Next: run "php ' . $script . ' test-alert --config=' . $configFile . '" to confirm alerts arrive.';
+        $lines[] = 'Next, confirm alerts arrive: ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' test-alert --config=' . escapeshellarg($configFile);
         $lines[] = 'Recommended: set heartbeat_url in the config to a healthchecks.io-style URL so you are told if Sentinel stops running.';
+        $lines[] = 'Run doctor for hosting checks and scan history. Cron keeps stderr visible; configure cron email or capture/rotate it in a private log.';
         return ['exit' => 0, 'lines' => $lines];
     }
 

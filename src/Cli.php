@@ -19,6 +19,8 @@ Commands:
   accept        accept the current state as known-good [--path=REL ...] [--self]
   update-rules  download, verify and install the latest rules bundle
   test-alert    send a test alert through every configured channel
+  doctor        read-only hosting/config checks and last scan history (no network or alerts)
+  cron          print cron entries using this PHP executable (does not install them)
   version       print the version
 
 All commands except init read --config=FILE (default: $SENTINEL_CONFIG, else sentinel.json next to this script).
@@ -83,7 +85,7 @@ TXT;
             if ($cmd === 'init') {
                 return self::result(Init::run($opts, $script, $http));
             }
-            if (!in_array($cmd, ['check', 'full', 'accept', 'update-rules', 'test-alert'], true)) {
+            if (!in_array($cmd, ['check', 'full', 'accept', 'update-rules', 'test-alert', 'doctor', 'cron'], true)) {
                 return ['exit' => 2, 'out' => [], 'err' => array_merge(["unknown command '$cmd'", ''], explode("\n", sprintf(self::USAGE, VERSION)))];
             }
             $configFile = isset($opts['config']) && is_string($opts['config'])
@@ -92,6 +94,12 @@ TXT;
             $config = Config::load($configFile);
             $config->addExclusion($script);
             $config->addExclusion($configFile);
+            if ($cmd === 'doctor') {
+                return self::result(Doctor::run($config, $script, $configFile));
+            }
+            if ($cmd === 'cron') {
+                return ['exit' => 0, 'out' => Cron::lines($script, $configFile), 'err' => []];
+            }
             $state = new State($config->stateDir);
             $channels = NotifierFactory::fromConfig($config, $http);
             $selfFiles = Init::selfFiles($script, $configFile, $state);

@@ -168,6 +168,19 @@ final class Monitor
         }
         $lines = array_merge($lines, $alertLines);
 
+        // Scan history for doctor: a run that processed a slice is not a complete traversal.
+        $status = $this->state->readJson('status.json');
+        $previous = $status[$mode] ?? [];
+        $status[$mode] = [
+            'last_run' => $now,
+            'last_complete' => $d['complete'] ? $now : (int)($previous['last_complete'] ?? 0),
+            'complete' => $d['complete'],
+            'changes' => count($d['changes']),
+            'critical' => $crit,
+            'warning' => $warn,
+        ];
+        $this->state->writeJson('status.json', $status);
+
         if ($this->config->heartbeatUrl !== '') {
             $hb = $this->http->request('GET', $this->config->heartbeatUrl, '', [], 10);
             if ($hb['status'] < 200 || $hb['status'] >= 300) {
