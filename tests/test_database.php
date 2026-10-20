@@ -75,6 +75,9 @@ t('Database administrator and option changes stay held until scoped acceptance',
     assertSame(1, $db->check(bigBudget())['exit']);
     assertContains('db-admin-change', $n->sent[0]['body']);
     assertContains('db-option-change', $n->sent[0]['body']);
+    assertContains('db-accept --scope=admins', $n->sent[0]['body']);
+    assertContains('db-accept --scope=options', $n->sent[0]['body']);
+    assertNotContains('keep a copy of the file', $n->sent[0]['body']);
     $db->check(bigBudget());
     assertSame(1, count($n->sent));
     $db->accept(bigBudget(), 'admins');

@@ -82,7 +82,7 @@ final class Init
 
             $scan = InitScan::run($config, $state, $analyzer, $script, $force, !empty($o['restart']), $budget);
             if (!$scan['complete']) {
-                return ['exit' => 0,'lines' => ['Initial scan paused after ' . $scan['count'] . ' file(s); no baseline is active yet. Run the same init command again to resume. Use --restart to discard only unfinished initial-scan progress.']];
+                return ['exit' => 0,'lines' => ['Initial scan paused after ' . $scan['count'] . ' file(s); the new baseline is not active yet. Run the same init command again to resume. Use --restart to discard only unfinished initial-scan progress.']];
             }
             $findings = $scan['findings'];
             $notes = $scan['notes'];
