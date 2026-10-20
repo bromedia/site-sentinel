@@ -1,0 +1,4 @@
+Please leave this file here.
+
+Site Sentinel deletes it by itself once setup has finished. While it is present, the first scheduled
+run sets Site Sentinel up and emails you "Site Sentinel is now protecting ...".

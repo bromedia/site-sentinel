@@ -33,6 +33,12 @@ final class Config
     public $wpChecksums = true;
     /** Accept plugin/theme version bumps whose files cannot be verified against an official source (legacy behaviour). */
     public $autoAcceptUnverifiedUpdates = false;
+    /** Who alert recipients should contact; shown in client alerts. */
+    public $contact = '';
+    /** 'technical' alerts show commands; 'client' alerts are plain language with no commands. */
+    public $audience = 'technical';
+    /** Absolute path of settings.txt, or '' when the config has none. */
+    public $settingsFile = '';
     public $heartbeatUrl = '';
     public $rulesUrl = '';
     public $rulesPublicKey = '';
@@ -54,7 +60,41 @@ final class Config
         if (!is_array($raw)) {
             throw new ConfigException("config file $file is not valid JSON");
         }
+        // Relative paths are relative to the config file, not to wherever cron happens to start,
+        // so a packaged folder works without anyone typing their hosting username.
+        $dir = dirname($file);
+        foreach (['site_root', 'state_dir', 'settings_file'] as $key) {
+            if (isset($raw[$key]) && is_string($raw[$key]) && $raw[$key] !== '' && $raw[$key][0] !== '/') {
+                $raw[$key] = $dir . '/' . $raw[$key];
+            }
+        }
+        $settingsFile = (string)($raw['settings_file'] ?? '');
+        if ($settingsFile !== '') {
+            $raw = self::withSettings($raw, Settings::load($settingsFile));
+        }
         return self::fromArray($raw);
+    }
+
+    /** Overlays settings.txt: recipients, names, the update policy and an optional heartbeat. */
+    private static function withSettings(array $raw, Settings $s): array
+    {
+        $raw['channels'] = array_merge([['type' => 'email', 'to' => $s->emails]], (array)($raw['channels'] ?? []));
+        if ($s->website !== '') {
+            $raw['site_name'] = $s->website;
+        }
+        if ((string)($raw['site_name'] ?? '') === '') {
+            $raw['site_name'] = 'your website';
+        }
+        if ($s->contact !== '') {
+            $raw['contact'] = $s->contact;
+        }
+        if ($s->approveUpdates !== null) {
+            $raw['auto_accept_unverified_updates'] = $s->approveUpdates;
+        }
+        if ($s->heartbeat !== '') {
+            $raw['heartbeat_url'] = $s->heartbeat;
+        }
+        return $raw;
     }
 
     public static function fromArray(array $raw): Config
@@ -97,6 +137,12 @@ final class Config
         $c->updateGraceSeconds = self::int($raw, 'update_grace_seconds', 120, 0);
         $c->wpChecksums = (bool)($raw['wp_checksums'] ?? true);
         $c->autoAcceptUnverifiedUpdates = (bool)($raw['auto_accept_unverified_updates'] ?? false);
+        $c->contact = trim((string)($raw['contact'] ?? ''));
+        $c->audience = (string)($raw['audience'] ?? 'technical');
+        if (!in_array($c->audience, ['technical', 'client'], true)) {
+            throw new ConfigException("audience must be 'technical' or 'client'");
+        }
+        $c->settingsFile = (string)($raw['settings_file'] ?? '');
         $c->heartbeatUrl = self::url($raw, 'heartbeat_url');
         $c->rulesUrl = self::url($raw, 'rules_url');
         $c->rulesPublicKey = trim((string)($raw['rules_public_key'] ?? ''));
@@ -128,6 +174,8 @@ final class Config
             'update_grace_seconds' => $this->updateGraceSeconds,
             'wp_checksums' => $this->wpChecksums,
             'auto_accept_unverified_updates' => $this->autoAcceptUnverifiedUpdates,
+            'contact' => $this->contact,
+            'audience' => $this->audience,
             'heartbeat_url' => $this->heartbeatUrl,
             'rules_url' => $this->rulesUrl,
             'rules_public_key' => $this->rulesPublicKey,

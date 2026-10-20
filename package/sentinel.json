@@ -1,0 +1,7 @@
+{
+    "site_root": "../public_html",
+    "state_dir": "state",
+    "settings_file": "settings.txt",
+    "audience": "client",
+    "channels": []
+}

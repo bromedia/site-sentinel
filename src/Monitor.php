@@ -172,7 +172,7 @@ final class Monitor
         $alertLines = [];
         $sent = [];
         if ($due) {
-            $digest = Digest::build($this->config->siteName, (string)gethostname(), $now, $due, $a['info'], $a['notes']);
+            $digest = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes']);
             $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
             foreach ($r['results'] as $line) {
                 $alertLines[] = 'alert ' . $line;
@@ -249,7 +249,7 @@ final class Monitor
             $due = $log->due([$f], $now, $this->config->remindHours * 3600);
             $sent = [];
             if ($due) {
-                $digest = Digest::build($this->config->siteName, (string)gethostname(), $now, $due, [], []);
+                $digest = Digest::forConfig($this->config, $now, $due, [], []);
                 $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
                 foreach ($r['results'] as $line) {
                     $lines[] = 'alert ' . $line;

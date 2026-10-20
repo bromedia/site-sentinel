@@ -20,7 +20,7 @@ jobs:
       - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: curl, sodium
+          extensions: curl, sodium, zip
           coverage: none
       - name: Regression suite
         run: php tests/run.php
@@ -30,13 +30,16 @@ jobs:
         run: |
           php build/build.php
           php -l dist/sentinel.php
+      - name: Client package (ZIP)
+        if: matrix.php == '8.3'
+        run: php build/package.php dist/site-sentinel.zip
       - name: Package documentation
         if: matrix.php == '8.3'
         run: cp LICENSE README.md dist/
-      - name: Generate checksum
+      - name: Generate checksums
         if: matrix.php == '8.3'
         working-directory: dist
-        run: sha256sum sentinel.php > sentinel.php.sha256
+        run: sha256sum sentinel.php site-sentinel.zip > SHA256SUMS
       - name: Downloadable standalone build
         if: matrix.php == '8.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
