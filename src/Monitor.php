@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Sentinel;
@@ -115,25 +116,31 @@ final class Monitor
             $processed = array_slice($d['changes'], 0, $a['processed']);
             if ($a['processed'] < count($d['changes'])) {
                 $d['complete'] = false;
-                $d['stopped_at'] = $processed ? $processed[count($processed)-1]['path'] : $startAfter;
+                $d['stopped_at'] = $processed ? $processed[count($processed) - 1]['path'] : $startAfter;
             }
             $heldGroups = array_merge($heldGroups, $a['held_groups']);
             $info = array_slice(array_unique(array_merge($info, $a['info'])), 0, 100);
             $notes = array_slice(array_unique(array_merge($notes, $a['notes'])), 0, 100);
-            foreach ($a['findings'] as $f) { $allFindings[$f->key()] = $f; }
+            foreach ($a['findings'] as $f) {
+                $allFindings[$f->key()] = $f;
+            }
             foreach ($d['unreadable'] as $dir) {
                 $f = new Finding(Finding::WARNING, (string)$dir, 'unreadable-dir', 'Directory could not be read');
                 $allFindings[$f->key()] = $f;
             }
             $updates = [];
             foreach ($processed as $c) {
-                if ($c['type'] === 'unchanged') { continue; }
+                if ($c['type'] === 'unchanged') {
+                    continue;
+                }
                 $changeCount++;
                 if (!isset($a['hold'][$c['path']])) {
                     $updates[$c['path']] = in_array($c['type'], ['removed','dropped'], true) ? null : $c['new'];
                 }
             }
-            if ($updates) { Baseline::applyUpdates($baselineFile, $updates, $baselineFile); }
+            if ($updates) {
+                Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
+            }
             $startAfter = (string)$d['stopped_at'];
             if ($d['complete']) {
                 unset($resume[$mode], $cycleHolds[$mode]);
@@ -146,12 +153,17 @@ final class Monitor
             $this->state->writeJson('resume.json', $resume);
         } while (!$d['complete'] && !$budget->exceeded() && count($allFindings) < 1000);
         $findings = array_values($allFindings);
-        foreach ((new SelfCheck($this->state, $this->selfFiles))->check() as $f) { $findings[] = $f; }
+        foreach ((new SelfCheck($this->state, $this->selfFiles))->check() as $f) {
+            $findings[] = $f;
+        }
         if ($d['complete'] && $wpOn) {
             $store = [];
             foreach ($newVersions as $g => $v) {
-                if (!isset($heldGroups[$g])) { $store[$g] = $v; }
-                elseif (isset($oldVersions[$g])) { $store[$g] = $oldVersions[$g]; }
+                if (!isset($heldGroups[$g])) {
+                    $store[$g] = $v;
+                } elseif (isset($oldVersions[$g])) {
+                    $store[$g] = $oldVersions[$g];
+                }
             }
             $this->state->writeJson('versions.json', $store);
         }
@@ -227,7 +239,8 @@ final class Monitor
                 $status[$mode]['last_attempt'] = ($this->clock)();
                 $status[$mode]['last_error'] = 'run failed; see cron stderr or the error alert';
                 $this->state->writeJson('status.json', $status);
-            } catch (\Throwable $ignored) {}
+            } catch (\Throwable $ignored) {
+            }
         }
         return ['exit' => 2, 'lines' => array_merge(['error: ' . $e->getMessage()], $this->reportError($e->getMessage()))];
     }

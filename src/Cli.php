@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Sentinel;
@@ -108,12 +109,16 @@ TXT;
             $selfFiles = Init::selfFiles($script, $configFile, $state);
             if (in_array($cmd, ['db-init','db-check','db-accept'], true)) {
                 $lock = Lock::acquire($state->path('lock'));
-                if ($lock === null) { return ['exit'=>2,'out'=>[],'err'=>['another scan is in progress']]; }
+                if ($lock === null) {
+                    return ['exit' => 2,'out' => [],'err' => ['another scan is in progress']];
+                }
                 try {
                     $db = new DatabaseMonitor($config, $state, $channels);
                     $budget = Budget::forConfig($config);
                     return self::result($cmd === 'db-check' ? $db->check($budget) : $db->accept($budget, (string)($opts['scope'] ?? 'all'), $cmd === 'db-init', !empty($opts['force'])));
-                } finally { $lock->release(); }
+                } finally {
+                    $lock->release();
+                }
             }
 
 

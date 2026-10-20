@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Sentinel;
@@ -65,9 +66,15 @@ final class Doctor
         if ($c->database['enabled']) {
             $add(function_exists('mysqli_init') && defined('MYSQLI_OPT_READ_TIMEOUT') ? 0 : 2, 'database monitoring requires mysqli with read-timeout support');
             $add(is_readable($c->stateDir . '/database-baseline.json') ? 0 : 2, 'review administrators/options and run db-init');
-            try { DatabaseCredentials::load($c); $add(0, 'database credentials readable without PHP execution (values hidden)'); }
-            catch (\Throwable $e) { $add(2, 'database credential source unreadable; use literals or a private credentials_file'); }
-        } else { $lines[] = 'Database monitoring disabled (opt-in).'; }
+            try {
+                DatabaseCredentials::load($c);
+                $add(0, 'database credentials readable without PHP execution (values hidden)');
+            } catch (\Throwable $e) {
+                $add(2, 'database credential source unreadable; use literals or a private credentials_file');
+            }
+        } else {
+            $lines[] = 'Database monitoring disabled (opt-in).';
+        }
 
         $file = $c->stateDir . '/status.json';
         $status = is_readable($file) ? json_decode((string)file_get_contents($file), true) : [];
@@ -80,7 +87,9 @@ final class Doctor
             $last = (int)($entry['last_run'] ?? 0);
             $complete = (int)($entry['last_complete'] ?? 0);
             $lines[] = $mode . ': last processed run ' . self::when($last) . '; last complete traversal ' . self::when($complete);
-            if (!empty($entry['last_error'])) { $add(1, $mode . ' last attempt failed; inspect cron stderr or the error alert'); }
+            if (!empty($entry['last_error'])) {
+                $add(1, $mode . ' last attempt failed; inspect cron stderr or the error alert');
+            }
             if ($last > 0 && empty($entry['complete'])) {
                 $add(1, $mode . ' has a partial scan pending; ' . ($mode === 'full' && !$c->continueFull ? 'run full to resume' : 'the next check continues it'));
             }

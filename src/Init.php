@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Sentinel;
@@ -62,80 +63,87 @@ final class Init
         $config->addExclusion($configFile);
         $state = new State($config->stateDir);
         $lock = Lock::acquire($state->path('lock'));
-        if ($lock === null) { return self::fail('another scan or init is in progress'); }
+        if ($lock === null) {
+            return self::fail('another scan or init is in progress');
+        }
         try {
-        $budget = $budget ?? Budget::forConfig($config);
-        $rulesFile = $state->path('rules.json');
-        $rules = is_file($rulesFile) ? Rules::load($rulesFile) : Rules::builtin();
-        $wpOn = $config->profile === 'wordpress';
-        $wp = $wpOn && $config->wpChecksums ? new WpChecksum(new BudgetHttp($http, $budget), $config, $state->path('cache')) : null;
-        $analyzer = new Analyzer(
-            $config,
-            new PatternScanner($rules, $config->maxScanBytes),
-            new LocationScanner($config),
-            $wp,
-            ExternalScanner::fromConfig($config)
-        );
+            $budget = $budget ?? Budget::forConfig($config);
+            $rulesFile = $state->path('rules.json');
+            $rules = is_file($rulesFile) ? Rules::load($rulesFile) : Rules::builtin();
+            $wpOn = $config->profile === 'wordpress';
+            $wp = $wpOn && $config->wpChecksums ? new WpChecksum(new BudgetHttp($http, $budget), $config, $state->path('cache')) : null;
+            $analyzer = new Analyzer(
+                $config,
+                new PatternScanner($rules, $config->maxScanBytes),
+                new LocationScanner($config),
+                $wp,
+                ExternalScanner::fromConfig($config)
+            );
 
-        $scan = InitScan::run($config, $state, $analyzer, $script, $force, !empty($o['restart']), $budget);
-        if (!$scan['complete']) {
-            return ['exit'=>0,'lines'=>['Initial scan paused after ' . $scan['count'] . ' file(s); no baseline is active yet. Run the same init command again to resume. Use --restart to discard only unfinished initial-scan progress.']];
-        }
-        $findings = $scan['findings']; $notes = $scan['notes']; $symlinkDirs = $scan['symlinks']; $count = $scan['count'];
-        $tmp = $state->path('baseline.init');
-        $lines = [];
-        if ($findings && !$force) {
-            @unlink($tmp);
-            @unlink($state->path('init-progress.json'));
-            $lines[] = 'The site already contains files that look malicious, so no baseline was created';
-            $lines[] = '(a baseline taken now would treat them as known-good):';
-            foreach ($findings as $f) {
-                $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule . ': ' . $f->message;
+            $scan = InitScan::run($config, $state, $analyzer, $script, $force, !empty($o['restart']), $budget);
+            if (!$scan['complete']) {
+                return ['exit' => 0,'lines' => ['Initial scan paused after ' . $scan['count'] . ' file(s); no baseline is active yet. Run the same init command again to resume. Use --restart to discard only unfinished initial-scan progress.']];
             }
-            $lines[] = 'Clean the site, then run init again. To accept the risk and baseline anyway, add --force.';
-            return ['exit' => 1, 'lines' => $lines];
-        }
+            $findings = $scan['findings'];
+            $notes = $scan['notes'];
+            $symlinkDirs = $scan['symlinks'];
+            $count = $scan['count'];
+            $tmp = $state->path('baseline.init');
+            $lines = [];
+            if ($findings && !$force) {
+                @unlink($tmp);
+                @unlink($state->path('init-progress.json'));
+                $lines[] = 'The site already contains files that look malicious, so no baseline was created';
+                $lines[] = '(a baseline taken now would treat them as known-good):';
+                foreach ($findings as $f) {
+                    $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule . ': ' . $f->message;
+                }
+                $lines[] = 'Clean the site, then run init again. To accept the risk and baseline anyway, add --force.';
+                return ['exit' => 1, 'lines' => $lines];
+            }
         // The config is written only once the scan has passed, so a refused init leaves nothing behind.
-        $json = json_encode($config->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        if ($json === false || file_put_contents($configFile, $json . "\n") === false) {
-            @unlink($tmp);
-            return self::fail("cannot write $configFile");
-        }
-        @chmod($configFile, 0600);
-        if (!rename($tmp, $state->path('baseline.txt'))) {
-            @unlink($tmp);
-            return self::fail('cannot install the baseline');
-        }
+            $json = json_encode($config->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if ($json === false || file_put_contents($configFile, $json . "\n") === false) {
+                @unlink($tmp);
+                return self::fail("cannot write $configFile");
+            }
+            @chmod($configFile, 0600);
+            if (!rename($tmp, $state->path('baseline.txt'))) {
+                @unlink($tmp);
+                return self::fail('cannot install the baseline');
+            }
 
-        if ($wpOn) {
-            $state->writeJson('versions.json', VersionTracker::read($config));
-        }
-        $selfFiles = self::selfFiles($script, $configFile, $state);
-        (new SelfCheck($state, $selfFiles))->record();
-        (new AlertLog($state))->clear();
-        @unlink($state->path('resume.json'));
-        $state->writeJson('status.json', []);
-        @unlink($state->path('init-progress.json'));
+            if ($wpOn) {
+                $state->writeJson('versions.json', VersionTracker::read($config));
+            }
+            $selfFiles = self::selfFiles($script, $configFile, $state);
+            (new SelfCheck($state, $selfFiles))->record();
+            (new AlertLog($state))->clear();
+            @unlink($state->path('resume.json'));
+            $state->writeJson('status.json', []);
+            @unlink($state->path('init-progress.json'));
 
-        $lines[] = sprintf('Created %s (profile %s) and a baseline of %d file(s).', $configFile, $config->profile, $count);
-        foreach ($findings as $f) {
-            $lines[] = 'WARNING: baselined despite ' . Finding::label($f->severity) . ' ' . $f->path . ' (' . $f->rule . ')';
+            $lines[] = sprintf('Created %s (profile %s) and a baseline of %d file(s).', $configFile, $config->profile, $count);
+            foreach ($findings as $f) {
+                $lines[] = 'WARNING: baselined despite ' . Finding::label($f->severity) . ' ' . $f->path . ' (' . $f->rule . ')';
+            }
+            foreach (array_unique($notes) as $n) {
+                $lines[] = 'note: ' . $n;
+            }
+            foreach ($symlinkDirs as [$path, $target]) {
+                $lines[] = sprintf("note: '%s' is a symlink to a directory (%s). Sentinel does not follow symlinks, so nothing inside it is monitored: set up a second config with site_root set to the target.", $path, $target);
+            }
+            $lines[] = '';
+            $lines[] = 'Add these lines to the crontab of the account that owns the site (crontab -e, or cPanel > Cron Jobs):';
+            $lines = array_merge($lines, $cron);
+            $lines[] = '';
+            $lines[] = 'Next: run "php ' . $script . ' test-alert --config=' . $configFile . '" to confirm alerts arrive.';
+            $lines[] = 'Recommended: set heartbeat_url in the config to a healthchecks.io-style URL so you are told if Sentinel stops running.';
+            $lines[] = 'Run doctor for hosting checks and scan history. Cron keeps stderr visible; configure cron email or capture/rotate it in a private log.';
+            return ['exit' => 0, 'lines' => $lines];
+        } finally {
+            $lock->release();
         }
-        foreach (array_unique($notes) as $n) {
-            $lines[] = 'note: ' . $n;
-        }
-        foreach ($symlinkDirs as [$path, $target]) {
-            $lines[] = sprintf("note: '%s' is a symlink to a directory (%s). Sentinel does not follow symlinks, so nothing inside it is monitored: set up a second config with site_root set to the target.", $path, $target);
-        }
-        $lines[] = '';
-        $lines[] = 'Add these lines to the crontab of the account that owns the site (crontab -e, or cPanel > Cron Jobs):';
-        $lines = array_merge($lines, $cron);
-        $lines[] = '';
-        $lines[] = 'Next: run "php ' . $script . ' test-alert --config=' . $configFile . '" to confirm alerts arrive.';
-        $lines[] = 'Recommended: set heartbeat_url in the config to a healthchecks.io-style URL so you are told if Sentinel stops running.';
-        $lines[] = 'Run doctor for hosting checks and scan history. Cron keeps stderr visible; configure cron email or capture/rotate it in a private log.';
-        return ['exit' => 0, 'lines' => $lines];
-        } finally { $lock->release(); }
     }
 
     /** @return array<string,string> */
