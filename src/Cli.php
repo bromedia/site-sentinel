@@ -17,6 +17,7 @@ Commands:
   check         quick scan of new and changed files (run every few minutes)
   full          full scan: hash everything, verify WordPress checksums (run nightly)
   accept        accept the current state as known-good [--path=REL ...] [--self]
+  dismiss       mark a reviewed false positive: dismiss <id> --reason=TEXT | --list | --remove=<id>
   update-rules  download, verify and install the latest rules bundle
   test-alert    send a test alert through every configured channel
   doctor        read-only hosting/config checks and last scan history (no network or alerts)
@@ -85,7 +86,7 @@ TXT;
             if ($cmd === 'init') {
                 return self::result(Init::run($opts, $script, $http));
             }
-            if (!in_array($cmd, ['check', 'full', 'accept', 'update-rules', 'test-alert', 'doctor', 'cron'], true)) {
+            if (!in_array($cmd, ['check', 'full', 'accept', 'dismiss', 'update-rules', 'test-alert', 'doctor', 'cron'], true)) {
                 return ['exit' => 2, 'out' => [], 'err' => array_merge(["unknown command '$cmd'", ''], explode("\n", sprintf(self::USAGE, VERSION)))];
             }
             $configFile = isset($opts['config']) && is_string($opts['config'])
@@ -110,6 +111,8 @@ TXT;
                     return self::result((new Monitor($config, $state, $http, $channels, $selfFiles))->run($cmd));
                 case 'accept':
                     return self::result(Accept::run($config, $state, (array)($opts['path'] ?? []), !empty($opts['self']), $selfFiles));
+                case 'dismiss':
+                    return self::result(Dismissals::run($config, $state, $opts, $selfFiles));
                 case 'update-rules':
                     if ($config->rulesUrl === '') {
                         return ['exit' => 2, 'out' => [], 'err' => ['error: rules_url is not set in the config; set it to the address of a rules.json bundle']];

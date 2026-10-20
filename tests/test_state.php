@@ -74,13 +74,27 @@ t('AlertLog alerts once, reminds Critical findings, retries failed sends and for
     assertSame([$warn], (new AlertLog($state))->due([$warn], 5, $day));
 });
 
-t('SelfCheck records on first use, then flags changed or missing tool files', function () {
+t('SelfCheck never re-trusts on its own when its record is lost, and flags changed or missing tool files', function () {
     $dir = tmpdir();
     $state = new State($dir . '/state');
     $script = putFile($dir, 'sentinel.php', '<?php // v1');
     $config = putFile($dir, 'sentinel.json', '{}');
     $files = ['script' => $script, 'config' => $config, 'rules' => $state->path('rules.json')];
     $sc = new SelfCheck($state, $files);
+    // init records the files; a record that is missing later (deleted, or unreadable) is reported,
+    // and nothing is trusted until accept --self, so a forged rules or dismissals file cannot ride along.
+    foreach (['missing' => null, 'corrupt' => 'not json'] as $case => $content) {
+        if ($content !== null) {
+            file_put_contents($state->path('selfcheck.json'), $content);
+        }
+        $f = $sc->check();
+        assertSame(1, count($f), $case);
+        assertSame(Finding::CRITICAL, $f[0]->severity);
+        assertContains('selfcheck.json', $f[0]->message);
+        assertSame(['script', 'config'], $sc->untrusted(), $case);
+        assertSame(1, count($sc->check()), "$case: still not re-recorded");
+    }
+    $sc->record(); // init, or accept --self
     assertSame([], $sc->check());
     assertSame([], $sc->check());
 
@@ -99,13 +113,46 @@ t('SelfCheck records on first use, then flags changed or missing tool files', fu
     assertSame(1, count($f));
     assertContains('missing', $f[0]->message);
 
-    // A rules bundle appearing for the first time is not tampering; once recorded, changing it is.
+    // A tracked file that appears without Sentinel writing it is tampering: an empty rules.json
+    // dropped into the state directory would otherwise switch off pattern detection silently.
     file_put_contents($config, '{}');
     $sc->record();
     file_put_contents($state->path('rules.json'), '{"version":1}');
+    $f = $sc->check();
+    assertSame(1, count($f));
+    assertContains('appeared', $f[0]->message);
+    $sc->record(); // accept --self
     assertSame([], $sc->check());
-    $sc->record();
     file_put_contents($state->path('rules.json'), '{"version":2}');
+    assertSame(1, count($sc->check()));
+});
+
+t('SelfCheck::trust re-trusts only the file Sentinel just wrote, so other tampering stays flagged', function () {
+    $dir = tmpdir();
+    $state = new State($dir . '/state');
+    $script = putFile($dir, 'sentinel.php', '<?php // v1');
+    $files = ['script' => $script, 'rules' => $state->path('rules.json')];
+    $sc = new SelfCheck($state, $files);
+    $sc->record();
+    file_put_contents($script, '<?php // tampered');
+    file_put_contents($state->path('rules.json'), '{"version":1}');
+    $sc->trust('rules'); // what update-rules does after installing a verified bundle
+    $f = $sc->check();
+    assertSame(1, count($f));
+    assertContains('script', $f[0]->path);
+    assertThrows(InvalidArgumentException::class, function () use ($sc) {
+        $sc->trust('nope');
+    });
+});
+
+t('SelfCheck treats a label missing from an older record as absent, so a file that later appears is flagged', function () {
+    $dir = tmpdir();
+    $state = new State($dir . '/state');
+    $script = putFile($dir, 'sentinel.php', '<?php');
+    $state->writeJson('selfcheck.json', ['script' => hash_file('sha256', $script)]); // written by an earlier version
+    $sc = new SelfCheck($state, ['script' => $script, 'dismissals' => $state->path('dismissals.json')]);
+    assertSame([], $sc->check(), 'upgrading alone raises nothing');
+    file_put_contents($state->path('dismissals.json'), '{"dismissals":[]}');
     assertSame(1, count($sc->check()));
 });
 

@@ -64,6 +64,8 @@ After reviewing your own development changes, accept the smallest relevant path,
 
 `accept` does not perform a malware review for you. Do not use a whole-site accept as a routine way to clear unexplained alerts: once accepted, a file is trusted until its content changes.
 
+For a detection you have reviewed and judged harmless (a vendor licence check, an `index.php` guard file in uploads), use `dismiss <id> --reason="..."` with the id from the alert rather than excluding the path: the file stays monitored and alerts again if it changes. `dismiss --list` is the audit trail; review it when you take over a site.
+
 Use a separate config and state directory for every site, passed with `--config=/absolute/path/client.json`. Ensure each corresponding `init` also uses its own `--state` directory. For symlinked uploads, give the target a separate config; Sentinel never follows symlinks. Review sites with relocated `wp-config.php` or a nonstandard content-directory layout before relying on WordPress-specific checks.
 
 This remains a file monitor: it does not inspect posts, users, options or other database content, block requests, repair files or replace backups.

@@ -11,8 +11,9 @@ final class Analyzer
     private $wp;
     private $external;
     private $sensitive;
+    private $dismissals;
 
-    public function __construct(Config $config, PatternScanner $patterns, LocationScanner $locations, ?WpChecksum $wp, ExternalScanner $external)
+    public function __construct(Config $config, PatternScanner $patterns, LocationScanner $locations, ?WpChecksum $wp, ExternalScanner $external, ?Dismissals $dismissals = null)
     {
         $this->config = $config;
         $this->patterns = $patterns;
@@ -20,6 +21,7 @@ final class Analyzer
         $this->wp = $wp;
         $this->external = $external;
         $this->sensitive = new PathFilter($config->sensitive);
+        $this->dismissals = $dismissals;
     }
 
     public static function groupOf(string $rel): string
@@ -45,7 +47,7 @@ final class Analyzer
      * @param array<string,string> $oldVersions stored plugin/theme versions
      * @param array<string,string> $newVersions versions currently on disk
      * @param int $now current unix time; with update_grace_seconds > 0, update-explainable findings for files that arrived within the grace period are deferred (held, not reported). 0 disables deferral
-     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, held_groups: array<string,bool>, notes: string[]}
+     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[]}
      */
     public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0): array
     {
@@ -56,6 +58,9 @@ final class Analyzer
         $hold = [];
         $groups = [];
         $queue = [];
+        $queueHashes = [];
+        $versionHolds = [];
+        $dismissed = 0;
         $official = 0;
         $removed = 0;
 
@@ -109,6 +114,7 @@ final class Analyzer
             $fresh = $grace > 0 && $now > 0 && ($now - max((int)$rec['mtime'], (int)($rec['ctime'] ?? 0))) < $grace;
             if ($fresh && !$hits && ($status === WpChecksum::MISMATCH || $status === WpChecksum::EXTRA) && !$c['stealth']) {
                 $hold[$rel] = true;
+                $versionHolds[self::groupOf($rel)] = true; // judged with this update on the next run
                 $deferred++;
                 continue;
             }
@@ -120,6 +126,10 @@ final class Analyzer
             if ($c['stealth']) {
                 $hits[] = new Finding(Finding::CRITICAL, $rel, 'stealth-modification', 'Content changed but size and modification time did not', $hash);
             }
+            // Detections are pinned to the file's content, so a dismissal (and alert dedupe) covers
+            // exactly what was reviewed; a dismissed hit no longer holds the file, and the change
+            // itself is then judged like any other.
+            $hits = $this->undismissed($this->pinned($hits, $rel, $hash), $dismissed);
             if ($hits) {
                 foreach ($hits as $h) {
                     $findings[] = $h;
@@ -145,15 +155,22 @@ final class Analyzer
             }
             if ($fresh) {
                 $hold[$rel] = true;
+                $versionHolds[self::groupOf($rel)] = true;
                 $deferred++;
                 continue;
             }
             $queue[$rel] = $this->config->abs($rel);
+            $queueHashes[$rel] = $hash;
             $groups[self::groupOf($rel)][$rel] = $hash;
         }
 
         if ($queue) {
-            foreach ($this->external->scan($queue) as $f) {
+            $externalHits = $this->external->scan($queue);
+            foreach ($externalHits as $f) {
+                $f = new Finding($f->severity, $f->path, $f->rule, $f->message, $f->hash !== '' ? $f->hash : (string)($queueHashes[$f->path] ?? ''));
+                if (!$this->undismissed([$f], $dismissed)) {
+                    continue;
+                }
                 $findings[] = $f;
                 $hold[$f->path] = true;
                 foreach (array_keys($groups) as $g) {
@@ -180,6 +197,9 @@ final class Analyzer
             $sample = implode(', ', array_slice($names, 0, 5)) . (count($names) > 5 ? sprintf(' (+%d more)', count($names) - 5) : '');
             // Keyed on the changed files' contents, so any further change while this waits for review alerts again.
             $contentKey = sha1(implode(',', $names) . '|' . implode(',', array_values($files)));
+            if ($bumped) {
+                $versionHolds[$g] = true; // the update itself awaits review
+            }
             $findings[] = $bumped
                 ? new Finding(
                     Finding::WARNING,
@@ -207,9 +227,12 @@ final class Analyzer
             $crit = array_values(array_filter($findings, function (Finding $f) {
                 return $f->severity >= Finding::CRITICAL;
             }));
-            return ['findings' => $crit, 'info' => [], 'hold' => [], 'held_groups' => [], 'notes' => $notes];
+            return ['findings' => $crit, 'info' => [], 'hold' => [], 'version_holds' => [], 'notes' => $notes];
         }
 
+        if ($dismissed > 0) {
+            $info[] = sprintf('%d reviewed finding(s) not reported again (see: dismiss --list)', $dismissed);
+        }
         if ($official > 0) {
             $info[] = sprintf('%d file(s) verified against official WordPress.org checksums', $official);
         }
@@ -219,11 +242,52 @@ final class Analyzer
         if ($deferred > 0) {
             $info[] = sprintf('%d file(s) changed within the last %d seconds; they will be judged on the next run', $deferred, $grace);
         }
-        $heldGroups = [];
-        foreach (array_keys($hold) as $p) {
-            $heldGroups[self::groupOf((string)$p)] = true;
+        // Only an update that is still waiting (for review, or for its copy to finish) keeps a
+        // plugin's or theme's stored version. A file held for its own finding does not: freezing
+        // the version then would let later edits pass as part of an update that was already done.
+        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'version_holds' => $versionHolds, 'notes' => $notes];
+    }
+
+    /**
+     * Gives findings without a content hash (non-code files are not hashed by the scan) the
+     * sha256 of the file, computed at most once.
+     *
+     * @param Finding[] $hits
+     * @return Finding[]
+     */
+    private function pinned(array $hits, string $rel, string $hash): array
+    {
+        $content = $hash;
+        foreach ($hits as $i => $h) {
+            if ($h->hash !== '') {
+                continue;
+            }
+            if ($content === '') {
+                $content = (string)@hash_file('sha256', $this->config->abs($rel));
+            }
+            $hits[$i] = new Finding($h->severity, $h->path, $h->rule, $h->message, $content);
         }
-        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes];
+        return $hits;
+    }
+
+    /**
+     * @param Finding[] $hits
+     * @return Finding[] the hits that have not been dismissed
+     */
+    private function undismissed(array $hits, int &$dismissed): array
+    {
+        if ($this->dismissals === null) {
+            return $hits;
+        }
+        $out = [];
+        foreach ($hits as $h) {
+            if ($this->dismissals->covers($h)) {
+                $dismissed++;
+            } else {
+                $out[] = $h;
+            }
+        }
+        return $out;
     }
 
     /**

@@ -35,6 +35,7 @@ See [the shared-hosting guide](docs/SHARED-HOSTING.md) for cPanel-style installa
 | `check` | Quick scan (stat-only walk, then scan only new or changed files). Run every 5-10 minutes. |
 | `full` | Nightly scan: hash every code file, verify WordPress core and plugin checksums. |
 | `accept` | Mark the current state as known-good: everything, or `--path=wp-content/plugins/foo` (repeatable). `--self` re-trusts the Sentinel files after you upgrade them. |
+| `dismiss` | Mark a reviewed false positive: `dismiss <id> --reason="..."` (the id is shown next to the finding). `--list` shows dismissals, `--remove=<id>` undoes one. |
 | `update-rules` | Download, verify and install the latest rules bundle. |
 | `test-alert` | Send a test alert through every channel. |
 | `doctor` | Read-only local hosting checks, excluded paths and last scan history. No scan, network requests or test alerts. |
@@ -45,13 +46,23 @@ For `doctor`, these mean `0` no local issues detected, `1` configuration warning
 
 ## What it reports
 
-- **Critical:** known malware patterns or hashes (built in, plus anything from ClamAV/YARA if installed), PHP files in `wp-content/uploads` (including `shell.php.jpg`), PHP code hidden inside images, a WordPress core or repository-plugin file that does not match wordpress.org's official checksum, an executable newly created in a `tmp` directory, content changed while size and timestamp were left alone, and any change to Sentinel's own files.
+- **Critical:** known malware patterns or hashes (built in, plus anything from ClamAV/YARA if installed), PHP files in `wp-content/uploads` (including `shell.php.jpg`), PHP code hidden inside images, a WordPress core or repository-plugin file that does not match wordpress.org's official checksum, an executable newly created in a `tmp` directory, content changed while size and timestamp were left alone, and any change to Sentinel's own files (the script, its config, and the rules and dismissals it keeps; a rules or dismissals file changed by hand is also ignored until you run `accept --self`).
 - **Warning:** new or modified code that is not explained by an update, a PHP extension hidden before another one anywhere (`evil.php.jpg`), changes to `wp-config.php`, `.htaccess` or `mu-plugins`, new symlinks, files that became world-writable, removed core files.
 - **Info:** things that were explained and accepted automatically (files verified against official checksums, a repository plugin updated to a published version). Info appears in the next alert that is sent anyway; it never sends one by itself.
 
 Each problem alerts once, and Critical problems remind you every `remind_hours` (default 24) until fixed or accepted. Held changes stay out of the baseline, so they keep showing in `check` output until you run `accept`.
 
 `full` rehashes code files, so it catches content changes that left size and timestamp alone. Files whose content has not changed since they were baselined or accepted are not scanned again: a rules update does not yet find malware that was already in the baseline.
+
+### Reviewed false positives
+
+Some legitimate files match a detection: a vendor's obfuscated licence check, an `index.php` guard file a plugin drops into uploads. Once you have looked at one and are sure it is harmless, dismiss it with the id shown next to it in the alert or `check` output:
+
+```
+php sentinel.php dismiss 912559fc1210 --reason="Vendor licence check in Premium 2.0, reviewed"
+```
+
+A dismissal covers that one rule on that one file with its exact current content: if the file changes, or a different rule matches it, you are alerted again. It records who dismissed it, when and why (`dismiss --list`). Only detections can be dismissed; changes (`unexplained-change`, `unverified-update`, a changed `wp-config.php`, and so on) are reviewed and then accepted with `accept --path=...`, so a new file that matched a rule usually needs both. `dismiss` refuses a file that has changed since it was reported, so you only ever dismiss what you saw. `dismiss --remove=<id>` puts the finding back: the file is taken out of the baseline, so the next scan examines it as a new file, with every check a new file gets, and it stays out of the baseline until it is reviewed and accepted again. If `dismissals.json` is changed by hand, or Sentinel's record of its own files (`selfcheck.json`) goes missing, scans ignore the dismissals and raise a Critical alert, and `dismiss` refuses to edit the file until you have reviewed it and run `accept --self` (which lists what it trusts). This is a tripwire against tampering by someone who doesn't know Sentinel, not a defence against someone who does: anyone who can write the state directory can also edit the baseline. The heartbeat is what tells you the monitor itself was disabled.
 
 ### WordPress updates
 

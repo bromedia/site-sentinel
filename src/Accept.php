@@ -13,8 +13,19 @@ final class Accept
     public static function run(Config $config, State $state, array $paths, bool $self, array $selfFiles): array
     {
         if ($self) {
-            (new SelfCheck($state, $selfFiles))->record();
-            return ['exit' => 0, 'lines' => ['recorded the current Sentinel files as trusted']];
+            // Say exactly what becomes trusted: after an upgrade this is the routine answer to the
+            // self-tamper alert, and it must not quietly bless a rules or dismissals file too.
+            $check = new SelfCheck($state, $selfFiles);
+            $changes = $check->changes();
+            $check->record();
+            $lines = ['recorded the current Sentinel files as trusted'];
+            foreach ($changes as $label => $what) {
+                $lines[] = sprintf('  %s (%s): %s since it was last trusted', $label, $selfFiles[$label], $what);
+            }
+            if (!$changes) {
+                $lines[] = '  (nothing had changed)';
+            }
+            return ['exit' => 0, 'lines' => $lines];
         }
         $baselineFile = $state->path('baseline.txt');
         if (!is_file($baselineFile)) {

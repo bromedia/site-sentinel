@@ -30,12 +30,19 @@ final class VersionTracker
 
     public static function dirVersion(Config $c, string $relDir): ?string
     {
+        $f = self::versionFile($c, $relDir);
+        return $f !== null ? self::header($c->abs($f), strpos($relDir, 'wp-content/themes/') !== 0) : null;
+    }
+
+    /** The file whose header gives a plugin's or theme's version (relative path), if any. */
+    public static function versionFile(Config $c, string $relDir): ?string
+    {
         $abs = $c->abs($relDir);
         if (!is_dir($abs)) {
             return null;
         }
         if (strpos($relDir, 'wp-content/themes/') === 0) {
-            return self::header($abs . '/style.css', false);
+            return self::header($abs . '/style.css', false) !== null ? $relDir . '/style.css' : null;
         }
         $names = @scandir($abs, SCANDIR_SORT_NONE);
         if ($names === false) {
@@ -43,12 +50,8 @@ final class VersionTracker
         }
         sort($names, SORT_STRING);
         foreach ($names as $f) {
-            if (substr($f, -4) !== '.php') {
-                continue;
-            }
-            $v = self::header($abs . '/' . $f, true);
-            if ($v !== null) {
-                return $v;
+            if (substr($f, -4) === '.php' && self::header($abs . '/' . $f, true) !== null) {
+                return $relDir . '/' . $f;
             }
         }
         return null;

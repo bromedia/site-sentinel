@@ -161,6 +161,7 @@ final class Init
             'script' => $s !== false ? $s : $script,
             'config' => $c !== false ? $c : $configFile,
             'rules' => $state->path('rules.json'),
+            'dismissals' => $state->path(Dismissals::FILE),
         ];
     }
 

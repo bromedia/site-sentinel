@@ -73,6 +73,9 @@ final class Digest
             $lines[] = '  ' . $f->path;
             $lines[] = '    ' . $f->rule . ': ' . $f->message;
             $lines[] = '    What to do: ' . self::action($f);
+            if (Dismissals::dismissable($f)) {
+                $lines[] = '    If you reviewed it and it is harmless: php sentinel.php dismiss ' . $f->id() . ' --reason="..."';
+            }
             $lines[] = '';
         }
         if ($notes) {

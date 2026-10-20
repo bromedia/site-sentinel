@@ -64,7 +64,8 @@ t('Analyzer: scanner hits in a plugin are Critical, held, and not double-reporte
     $r = runAnalysis($c, $b, null, $old);
     assertSame(['test-marker@wp-content/plugins/foo/evil.php'], ruleList($r));
     assertTrue(isset($r['hold']['wp-content/plugins/foo/evil.php']));
-    assertTrue(isset($r['held_groups']['wp-content/plugins/foo']));
+    // A file held for its own finding does not hold the plugin's stored version.
+    assertSame([], $r['version_holds']);
 });
 
 t('Analyzer: an unverified version bump is a held Warning by default, and a change without one too', function () {
@@ -79,7 +80,7 @@ t('Analyzer: an unverified version bump is a held Warning by default, and a chan
     assertSame(Finding::WARNING, $r['findings'][0]->severity);
     assertContains('1.0 -> 1.1', $r['findings'][0]->message);
     assertTrue(isset($r['hold']['wp-content/plugins/foo/foo.php']));
-    assertTrue(isset($r['held_groups']['wp-content/plugins/foo']));
+    assertTrue(isset($r['version_holds']['wp-content/plugins/foo']));
 
     bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// quietly edited\n");
     $r2 = runAnalysis($c, $b, null, $old);
