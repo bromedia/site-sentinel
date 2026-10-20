@@ -32,6 +32,8 @@ return [
     'Digest.php',
     'Monitor.php',
     'RulesUpdater.php',
+    'Cron.php',
+    'Doctor.php',
     'Init.php',
     'Accept.php',
     'Cli.php',

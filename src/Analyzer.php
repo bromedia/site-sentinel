@@ -84,6 +84,9 @@ final class Analyzer
             $hash = (string)$rec['hash'];
 
             if (($rec['mode'] & 0170000) === 0120000) {
+                if ($c['type'] === 'unchanged') {
+                    continue; // Existing trusted links were not created or changed by this scan.
+                }
                 $findings[] = new Finding(Finding::WARNING, $rel, 'symlink', 'Symbolic link ' . ($isNew ? 'created' : 'changed'));
                 $hold[$rel] = true;
                 continue;
@@ -125,6 +128,15 @@ final class Analyzer
                     $findings[] = $h;
                 }
                 $hold[$rel] = true;
+                continue;
+            }
+
+            // Full scans re-evaluate trusted files against current rules and checksums.
+            // They are not new edits, so do not emit unexplained/sensitive-change warnings.
+            if ($c['type'] === 'unchanged') {
+                if ($this->config->isCodeFile($rel)) {
+                    $queue[$rel] = $this->config->abs($rel);
+                }
                 continue;
             }
 

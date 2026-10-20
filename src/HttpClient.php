@@ -80,7 +80,7 @@ final class NativeHttp implements HttpClient
         // PHP 8.4+ deprecates the magic $http_response_header variable.
         $responseHeaders = function_exists('http_get_last_response_headers')
             ? (http_get_last_response_headers() ?? [])
-            : (get_defined_vars()['http_response_header'] ?? []);
+            : ($http_response_header ?? []);
         foreach ($responseHeaders as $h) {
             if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string)$h, $m)) {
                 $status = (int)$m[1];

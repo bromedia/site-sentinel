@@ -85,7 +85,7 @@ final class Monitor
             ExternalScanner::fromConfig($this->config)
         );
 
-        $d = (new Differ($this->config))->diff($baselineFile, $startAfter, $budget, $full);
+        $d = (new Differ($this->config))->diff($baselineFile, $startAfter, $budget, $full, $full);
         $oldVersions = $this->state->readJson('versions.json');
         $newVersions = $wpOn ? VersionTracker::read($this->config) : [];
         $now = ($this->clock)();
@@ -100,7 +100,12 @@ final class Monitor
         }
 
         $updates = [];
+        $changeCount = 0;
         foreach ($d['changes'] as $c) {
+            if ($c['type'] === 'unchanged') {
+                continue;
+            }
+            $changeCount++;
             if (isset($a['hold'][$c['path']])) {
                 continue;
             }
@@ -156,7 +161,7 @@ final class Monitor
         $lines = [sprintf(
             '%s: %d change(s), %d critical, %d warning, %s',
             $mode,
-            count($d['changes']),
+            $changeCount,
             $crit,
             $warn,
             $d['complete'] ? 'scan complete' : 'partial scan, resuming after ' . $d['stopped_at']
@@ -167,6 +172,18 @@ final class Monitor
             }
         }
         $lines = array_merge($lines, $alertLines);
+
+        $status = $this->state->readJson('status.json');
+        $previous = $status[$mode] ?? [];
+        $status[$mode] = [
+            'last_run' => $now,
+            'last_complete' => $d['complete'] ? $now : (int)($previous['last_complete'] ?? 0),
+            'complete' => $d['complete'],
+            'changes' => $changeCount,
+            'critical' => $crit,
+            'warning' => $warn,
+        ];
+        $this->state->writeJson('status.json', $status);
 
         if ($this->config->heartbeatUrl !== '') {
             $hb = $this->http->request('GET', $this->config->heartbeatUrl, '', [], 10);
