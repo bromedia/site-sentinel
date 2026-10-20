@@ -116,6 +116,37 @@ t('Analyzer: even with auto-accept, a wordpress.org plugin bumped to an unpublis
     assertSame([], $r['info']);
 });
 
+t('Analyzer: with auto-accept, only a definite "not on wordpress.org" accepts; an unreachable wordpress.org holds', function () {
+    $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// v1\n";
+    $bumped = str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . '$f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");' . "\n";
+    foreach ([[503, 'unavailable'], [0, '']] as [$status, $body]) {
+        [$root, $c, $b] = wpFixture([], ['auto_accept_unverified_updates' => true]);
+        $old = VersionTracker::read($c);
+        $http = new FakeHttp();
+        coreRoute($http, []);
+        if ($status !== 0) {
+            $http->route('https://downloads.wordpress.org/plugin-checksums/', $status, $body);
+        } // status 0: no route at all, i.e. a dead network
+        $a = analyzerFor($c, new WpChecksum($http, $c, tmpdir()));
+        bump($root, 'wp-content/plugins/foo/foo.php', $bumped);
+        $r = runAnalysis($c, $b, $a, $old);
+        assertSame(['unverified-update@wp-content/plugins/foo'], ruleList($r), "status $status");
+        assertTrue(isset($r['hold']['wp-content/plugins/foo/foo.php']), "status $status");
+        assertContains("Checksums for plugin 'foo' unavailable", implode("\n", $r['notes']), "status $status");
+    }
+
+    // A definite 404 for the previous version: a premium plugin, so the legacy setting applies.
+    [$root, $c, $b] = wpFixture([], ['auto_accept_unverified_updates' => true]);
+    $old = VersionTracker::read($c);
+    $http = new FakeHttp();
+    coreRoute($http, []);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/', 404, '{"error":"not found"}');
+    bump($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.1', $v1));
+    $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), $old);
+    assertSame([], ruleList($r));
+    assertContains('wp-content/plugins/foo updated 1.0 -> 1.1', implode("\n", $r['info']));
+});
+
 t('Analyzer: a brand-new plugin directory is a Warning and many files make one finding', function () {
     [$root, $c, $b] = wpFixture();
     $old = VersionTracker::read($c);

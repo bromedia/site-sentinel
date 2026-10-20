@@ -172,7 +172,7 @@ final class Analyzer
             // Files reach this point only if no official checksum vouched for them, so a version
             // bump alone proves nothing: anyone who can edit the files can edit the Version header.
             $bumped = $old !== null && $new !== null && $old !== $new;
-            if ($bumped && $this->config->autoAcceptUnverifiedUpdates && !$this->isRepositoryPlugin($g, $old)) {
+            if ($bumped && $this->config->autoAcceptUnverifiedUpdates && $this->confirmedNotRepositoryPlugin($g, $old)) {
                 $info[] = sprintf('%s updated %s -> %s (%d file(s), not verified)', $g, $old, $new, count($files));
                 continue;
             }
@@ -227,15 +227,17 @@ final class Analyzer
     }
 
     /**
-     * A plugin whose previous version is published on wordpress.org is a repository plugin: if its
-     * new files did not verify, the new version is unpublished (or wordpress.org was unreachable),
-     * which is never safe to accept on the strength of the version header.
+     * Legacy auto-accept is only for plugins and themes wordpress.org definitely does not host.
+     * A plugin whose previous version is published there is a repository plugin, so new files
+     * that did not verify mean an unpublished version; and if wordpress.org could not be asked,
+     * that is unknown, which must not be treated as "premium". Themes have no checksum API, and
+     * with wp_checksums off nothing is ever looked up, so both stay eligible.
      */
-    private function isRepositoryPlugin(string $group, string $oldVersion): bool
+    private function confirmedNotRepositoryPlugin(string $group, string $oldVersion): bool
     {
         if ($this->wp === null || !preg_match('#^wp-content/plugins/([^/]+)$#', $group, $m)) {
-            return false;
+            return true;
         }
-        return $this->wp->isRepositoryRelease($m[1], $oldVersion);
+        return $this->wp->releaseStatus($m[1], $oldVersion) === WpChecksum::RELEASE_ABSENT;
     }
 }

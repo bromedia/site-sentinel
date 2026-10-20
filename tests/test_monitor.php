@@ -213,6 +213,25 @@ t('Monitor: an unverified plugin update alerts once, stays held until accepted, 
     assertSame('2.1', $state->readJson('versions.json')['wp-content/plugins/premium']);
 });
 
+t('Monitor: with auto-accept, a fake version during a wordpress.org outage is alerted, kept out of the baseline and not stored', function () {
+    $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\nfunction foo() {}\n";
+    [$root, $config, $state, $m, $n, $http] = monitorFixture(
+        ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n", 'wp-content/plugins/foo/foo.php' => $v1],
+        ['profile' => 'wordpress', 'auto_accept_unverified_updates' => true]
+    );
+    $state->writeJson('versions.json', VersionTracker::read($config));
+    coreRoute($http, ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n"]);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/', 503, 'unavailable');
+    putFile($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . '$f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");' . "\n");
+    $backdoor = hash_file('sha256', $root . '/wp-content/plugins/foo/foo.php');
+
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(1, count($n->sent));
+    assertContains('unverified-update', $n->sent[0]['body']);
+    assertNotContains($backdoor, (string)file_get_contents($state->path('baseline.txt')));
+    assertSame('1.0', $state->readJson('versions.json')['wp-content/plugins/foo']);
+});
+
 t('Monitor: with auto_accept_unverified_updates a plugin update is explained, silent, and advances stored versions', function () {
     $files = [
         'wp-config.php' => '<?php',
