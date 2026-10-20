@@ -169,19 +169,32 @@ final class Analyzer
             }
             $old = $oldVersions[$g] ?? null;
             $new = $newVersions[$g] ?? null;
-            if ($old !== null && $new !== null && $old !== $new) {
-                $info[] = sprintf('%s updated %s -> %s (%d file(s))', $g, $old, $new, count($files));
+            // Files reach this point only if no official checksum vouched for them, so a version
+            // bump alone proves nothing: anyone who can edit the files can edit the Version header.
+            $bumped = $old !== null && $new !== null && $old !== $new;
+            if ($bumped && $this->config->autoAcceptUnverifiedUpdates && !$this->isRepositoryPlugin($g, $old)) {
+                $info[] = sprintf('%s updated %s -> %s (%d file(s), not verified)', $g, $old, $new, count($files));
                 continue;
             }
             $names = array_map('strval', array_keys($files));
             $sample = implode(', ', array_slice($names, 0, 5)) . (count($names) > 5 ? sprintf(' (+%d more)', count($names) - 5) : '');
-            $findings[] = new Finding(
-                Finding::WARNING,
-                $g,
-                'unexplained-change',
-                sprintf('%d file(s) changed without a version change: %s', count($names), $sample),
-                sha1(implode(',', $names) . '|' . implode(',', array_values($files)))
-            );
+            // Keyed on the changed files' contents, so any further change while this waits for review alerts again.
+            $contentKey = sha1(implode(',', $names) . '|' . implode(',', array_values($files)));
+            $findings[] = $bumped
+                ? new Finding(
+                    Finding::WARNING,
+                    $g,
+                    'unverified-update',
+                    sprintf('Version %s -> %s, but %d changed file(s) could not be verified against an official source: %s', $old, $new, count($names), $sample),
+                    sha1($old . '>' . $new . '|' . $contentKey)
+                )
+                : new Finding(
+                    Finding::WARNING,
+                    $g,
+                    'unexplained-change',
+                    sprintf('%d file(s) changed without a version change: %s', count($names), $sample),
+                    $contentKey
+                );
             foreach ($names as $n) {
                 $hold[$n] = true;
             }
@@ -211,5 +224,18 @@ final class Analyzer
             $heldGroups[self::groupOf((string)$p)] = true;
         }
         return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes];
+    }
+
+    /**
+     * A plugin whose previous version is published on wordpress.org is a repository plugin: if its
+     * new files did not verify, the new version is unpublished (or wordpress.org was unreachable),
+     * which is never safe to accept on the strength of the version header.
+     */
+    private function isRepositoryPlugin(string $group, string $oldVersion): bool
+    {
+        if ($this->wp === null || !preg_match('#^wp-content/plugins/([^/]+)$#', $group, $m)) {
+            return false;
+        }
+        return $this->wp->isRepositoryRelease($m[1], $oldVersion);
     }
 }

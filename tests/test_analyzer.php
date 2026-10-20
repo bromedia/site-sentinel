@@ -67,22 +67,53 @@ t('Analyzer: scanner hits in a plugin are Critical, held, and not double-reporte
     assertTrue(isset($r['held_groups']['wp-content/plugins/foo']));
 });
 
-t('Analyzer: a plugin update with a version bump is explained, without one it is a Warning', function () {
+t('Analyzer: an unverified version bump is a held Warning by default, and a change without one too', function () {
     [$root, $c, $b] = wpFixture();
     $old = VersionTracker::read($c);
     assertSame(['wp-content/plugins/foo' => '1.0'], $old);
 
+    // Anyone who can edit the files can edit the Version header, so a bump alone proves nothing.
     bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
     $r = runAnalysis($c, $b, null, $old);
-    assertSame([], ruleList($r));
-    assertSame([], $r['hold']);
-    assertContains('wp-content/plugins/foo updated 1.0 -> 1.1', implode("\n", $r['info']));
+    assertSame(['unverified-update@wp-content/plugins/foo'], ruleList($r));
+    assertSame(Finding::WARNING, $r['findings'][0]->severity);
+    assertContains('1.0 -> 1.1', $r['findings'][0]->message);
+    assertTrue(isset($r['hold']['wp-content/plugins/foo/foo.php']));
+    assertTrue(isset($r['held_groups']['wp-content/plugins/foo']));
 
     bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// quietly edited\n");
     $r2 = runAnalysis($c, $b, null, $old);
     assertSame(['unexplained-change@wp-content/plugins/foo'], ruleList($r2));
     assertSame(Finding::WARNING, $r2['findings'][0]->severity);
     assertTrue(isset($r2['hold']['wp-content/plugins/foo/foo.php']));
+});
+
+t('Analyzer: auto_accept_unverified_updates restores the quiet Info for premium plugin updates', function () {
+    [$root, $c, $b] = wpFixture([], ['auto_accept_unverified_updates' => true]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
+    $r = runAnalysis($c, $b, null, $old);
+    assertSame([], ruleList($r));
+    assertSame([], $r['hold']);
+    assertContains('wp-content/plugins/foo updated 1.0 -> 1.1 (1 file(s), not verified)', implode("\n", $r['info']));
+});
+
+t('Analyzer: even with auto-accept, a wordpress.org plugin bumped to an unpublished version is a Warning', function () {
+    $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// v1\n";
+    [$root, $c, $b] = wpFixture([], ['auto_accept_unverified_updates' => true]);
+    $old = VersionTracker::read($c);
+    $http = new FakeHttp();
+    coreRoute($http, []);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/1.0.json', 200, json_encode(['files' => ['foo.php' => ['sha256' => hash('sha256', $v1)]]]));
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/', 404, '{"error":"not found"}');
+    $a = analyzerFor($c, new WpChecksum($http, $c, tmpdir()));
+
+    // A backdoor plus a Version header wordpress.org never published: previously silent.
+    bump($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . '$f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");' . "\n");
+    $r = runAnalysis($c, $b, $a, $old);
+    assertSame(['unverified-update@wp-content/plugins/foo'], ruleList($r));
+    assertTrue(isset($r['hold']['wp-content/plugins/foo/foo.php']));
+    assertSame([], $r['info']);
 });
 
 t('Analyzer: a brand-new plugin directory is a Warning and many files make one finding', function () {

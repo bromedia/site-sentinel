@@ -63,6 +63,19 @@ final class WpChecksum
         return self::UNKNOWN;
     }
 
+    /**
+     * Whether wordpress.org publishes checksums for this plugin release, i.e. it is a
+     * repository plugin at that version. False for premium plugins, unknown versions
+     * and when wordpress.org cannot be reached (a note says so).
+     */
+    public function isRepositoryRelease(string $slug, string $version): bool
+    {
+        if (!preg_match('/^[A-Za-z0-9._-]+$/', $slug) || !preg_match('/^[A-Za-z0-9._+-]+$/', $version)) {
+            return false;
+        }
+        return $this->pluginMap($slug, $version) !== null;
+    }
+
     private function verifyPlugin(string $rel, string $abs): string
     {
         if (!preg_match('#^wp-content/plugins/([^/]+)/(.+)$#', $rel, $m)) {
