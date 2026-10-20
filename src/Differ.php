@@ -35,10 +35,12 @@ final class Differ
 
     /**
      * Merge-compares the walk (strictly after $startAfter) with the baseline.
+     * $reanalyze includes unchanged records for full-scan analysis; callers such
+     * as accept/snapshot leave it off so only actual differences are returned.
      *
      * @return array{changes: array, stopped_at: ?string, complete: bool, unreadable: string[]}
      */
-    public function diff(string $baselineFile, string $startAfter, Budget $budget, bool $full): array
+    public function diff(string $baselineFile, string $startAfter, Budget $budget, bool $full, bool $reanalyze = false, int $maxEntries = 0): array
     {
         $walker = new Walker($this->config);
         $walk = $walker->walk($startAfter);
@@ -52,7 +54,7 @@ final class Differ
         $processed = 0;
         $complete = true;
         while (true) {
-            if ($processed > 0 && $budget->exceeded()) {
+            if ($processed > 0 && ($budget->exceeded() || ($maxEntries > 0 && $processed >= $maxEntries))) {
                 $complete = false;
                 break;
             }
@@ -79,7 +81,7 @@ final class Differ
                 $last = $b['path'];
                 $base->next();
             } else {
-                $c = $this->compare($w, $b, $full);
+                $c = $this->compare($w, $b, $full, $reanalyze);
                 if ($c !== null) {
                     $changes[] = $c;
                 }
@@ -92,7 +94,7 @@ final class Differ
         return ['changes' => $changes, 'stopped_at' => $complete ? null : $last, 'complete' => $complete, 'unreadable' => $walker->unreadable()];
     }
 
-    private function compare(array $w, array $b, bool $full): ?array
+    private function compare(array $w, array $b, bool $full, bool $reanalyze): ?array
     {
         $statChanged = $w['size'] !== $b['size'] || $w['mtime'] !== $b['mtime'] || $w['mode'] !== $b['mode'];
         if (!$statChanged && !$full) {
@@ -101,6 +103,9 @@ final class Differ
         [$rec, $unreadable] = $this->record($w);
         if (!$statChanged) {
             if ($unreadable || $rec['hash'] === '' || $b['hash'] === '' || $rec['hash'] === $b['hash']) {
+                if ($reanalyze) {
+                    return $this->change('unchanged', $w['path'], $b, $rec, ['unreadable' => $unreadable, 'content_same' => true]);
+                }
                 return null;
             }
             return $this->change('modified', $w['path'], $b, $rec, ['stealth' => true]);

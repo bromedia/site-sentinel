@@ -47,7 +47,7 @@ final class Analyzer
      * @param int $now current unix time; with update_grace_seconds > 0, update-explainable findings for files that arrived within the grace period are deferred (held, not reported). 0 disables deferral
      * @return array{findings: Finding[], info: string[], hold: array<string,bool>, held_groups: array<string,bool>, notes: string[]}
      */
-    public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0): array
+    public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0, ?Budget $budget = null): array
     {
         $grace = $this->config->updateGraceSeconds;
         $deferred = 0;
@@ -55,11 +55,14 @@ final class Analyzer
         $info = [];
         $hold = [];
         $groups = [];
-        $queue = [];
+        $externalNotes = [];
+        $processed = 0;
         $official = 0;
         $removed = 0;
 
         foreach ($changes as $c) {
+            if ($processed > 0 && $budget !== null && $budget->exceeded()) { break; }
+            $processed++;
             if ($c['type'] === 'dropped') {
                 continue;
             }
@@ -84,6 +87,9 @@ final class Analyzer
             $hash = (string)$rec['hash'];
 
             if (($rec['mode'] & 0170000) === 0120000) {
+                if ($c['type'] === 'unchanged') {
+                    continue; // Existing trusted links were not created or changed by this scan.
+                }
                 $findings[] = new Finding(Finding::WARNING, $rel, 'symlink', 'Symbolic link ' . ($isNew ? 'created' : 'changed'));
                 $hold[$rel] = true;
                 continue;
@@ -128,6 +134,19 @@ final class Analyzer
                 continue;
             }
 
+            // Full scans re-evaluate trusted files against current rules and checksums.
+            // They are not new edits, so do not emit unexplained/sensitive-change warnings.
+            if ($c['type'] === 'unchanged') {
+                if ($this->config->isCodeFile($rel)) {
+                    foreach ($this->externalScan($rel, $budget) as $f) {
+                        $findings[] = $f;
+                        $hold[$rel] = true;
+                    }
+                    $externalNotes = array_merge($externalNotes, $this->external->errors());
+                }
+                continue;
+            }
+
             if ($c['type'] === 'modified' && $c['content_same']) {
                 if (($rec['mode'] & 0002) !== 0 && (((int)($c['old']['mode'] ?? 0)) & 0002) === 0) {
                     $findings[] = new Finding(Finding::WARNING, $rel, 'world-writable', 'File became world-writable', $hash);
@@ -148,17 +167,14 @@ final class Analyzer
                 $deferred++;
                 continue;
             }
-            $queue[$rel] = $this->config->abs($rel);
-            $groups[self::groupOf($rel)][$rel] = $hash;
-        }
-
-        if ($queue) {
-            foreach ($this->external->scan($queue) as $f) {
+            $externalHits = $this->externalScan($rel, $budget);
+            $externalNotes = array_merge($externalNotes, $this->external->errors());
+            foreach ($externalHits as $f) {
                 $findings[] = $f;
                 $hold[$f->path] = true;
-                foreach (array_keys($groups) as $g) {
-                    unset($groups[$g][$f->path]);
-                }
+            }
+            if (!$externalHits) {
+                $groups[self::groupOf($rel)][$rel] = $hash;
             }
         }
 
@@ -169,7 +185,7 @@ final class Analyzer
             }
             $old = $oldVersions[$g] ?? null;
             $new = $newVersions[$g] ?? null;
-            if ($old !== null && $new !== null && $old !== $new) {
+            if ($old !== null && $new !== null && $old !== $new && $this->config->autoAcceptUnverifiedUpdates) {
                 $info[] = sprintf('%s updated %s -> %s (%d file(s))', $g, $old, $new, count($files));
                 continue;
             }
@@ -178,9 +194,11 @@ final class Analyzer
             $findings[] = new Finding(
                 Finding::WARNING,
                 $g,
-                'unexplained-change',
-                sprintf('%d file(s) changed without a version change: %s', count($names), $sample),
-                sha1(implode(',', $names) . '|' . implode(',', array_values($files)))
+                $old !== null && $new !== null && $old !== $new ? 'unverified-update' : 'unexplained-change',
+                $old !== null && $new !== null && $old !== $new
+                    ? sprintf('Unverified update %s -> %s requires review: %s', $old, $new, $sample)
+                    : sprintf('%d file(s) changed without a verified update: %s', count($names), $sample),
+                $old !== null && $new !== null && $old !== $new ? sha1($new) : sha1(implode(',', $names) . '|' . implode(',', array_values($files)))
             );
             foreach ($names as $n) {
                 $hold[$n] = true;
@@ -188,13 +206,13 @@ final class Analyzer
         }
 
         $notes = $this->wp !== null ? $this->wp->notes() : [];
-        $notes = array_merge($notes, $this->external->errors());
+        $notes = array_merge($notes, $externalNotes);
 
         if ($initial) {
             $crit = array_values(array_filter($findings, function (Finding $f) {
                 return $f->severity >= Finding::CRITICAL;
             }));
-            return ['findings' => $crit, 'info' => [], 'hold' => [], 'held_groups' => [], 'notes' => $notes];
+            return ['findings' => $crit, 'info' => [], 'hold' => [], 'held_groups' => [], 'notes' => $notes, 'processed' => $processed];
         }
 
         if ($official > 0) {
@@ -210,6 +228,15 @@ final class Analyzer
         foreach (array_keys($hold) as $p) {
             $heldGroups[self::groupOf((string)$p)] = true;
         }
-        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes];
+        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes, 'processed' => $processed];
+    }
+
+    private function externalScan(string $rel, ?Budget $budget): array
+    {
+        $hits = $this->external->scan([$rel => $this->config->abs($rel)], $budget);
+        if ($this->external->errors()) {
+            $hits[] = new Finding(Finding::WARNING, $rel, 'external-scan-incomplete', 'External scan failed or timed out; this file has not been accepted');
+        }
+        return $hits;
     }
 }

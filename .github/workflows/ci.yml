@@ -1,0 +1,78 @@
+name: Test and build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.3', '8.4']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, sodium, mysqli
+          coverage: none
+      - name: Regression suite
+        run: php tests/run.php
+      - name: PHP 7.4 compatibility
+        run: php build/compat.php
+      - name: Build and lint the standalone script
+        run: |
+          php build/build.php
+          php -l dist/sentinel.php
+      - name: Package documentation
+        if: matrix.php == '8.3'
+        run: cp LICENSE README.md dist/
+      - name: Generate checksum
+        if: matrix.php == '8.3'
+        working-directory: dist
+        run: sha256sum sentinel.php > sentinel.php.sha256
+      - name: Downloadable standalone build
+        if: matrix.php == '8.3'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: site-sentinel
+          path: dist/
+          if-no-files-found: error
+
+
+  database:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['mysql:8.0', 'mariadb:11.4']
+    services:
+      db:
+        image: ${{ matrix.engine }}
+        env:
+          MYSQL_ROOT_PASSWORD: sentinel-test
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306/tcp
+        options: >-
+          --health-cmd "mysqladmin ping -h127.0.0.1 -psentinel-test --silent || mariadb-admin ping -h127.0.0.1 -psentinel-test --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
+        with:
+          php-version: '8.3'
+          extensions: mysqli
+          coverage: none
+      - name: Integration with a SELECT-only monitoring account
+        env:
+          SENTINEL_TEST_DB_PORT: ${{ job.services.db.ports[3306] }}
+        run: php tests/integration_mysql.php

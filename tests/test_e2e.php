@@ -77,12 +77,13 @@ t('end to end: a WordPress site with the tool installed inside the web root', fu
     $init = sentinel($dist, ['init', '--root=' . $site, '--file=' . $alerts, '--no-wp-checksums', '--name=E2E', '--config=' . $site . '/sentinel.json', '--state=' . $site . '/.sentinel']);
     assertSame(0, $init['exit'], $init['out'] . $init['err']);
     assertContains('profile wordpress', $init['out']);
-    assertContains('*/10 * * * * php', $init['out']);
+    assertContains(Sentinel\Cron::lines($dist, $site . '/sentinel.json')[0], $init['out']);
 
     // This test edits files in quick succession; the update grace period (covered by its own tests) would defer them.
     $cfgJson = json_decode((string)file_get_contents($site . '/sentinel.json'), true);
     assertSame(120, $cfgJson['update_grace_seconds']);
     $cfgJson['update_grace_seconds'] = 0;
+    $cfgJson['auto_accept_unverified_updates'] = true; // Explicit legacy policy.
     file_put_contents($site . '/sentinel.json', json_encode($cfgJson));
     // Editing the config is itself a tripwire event until it is accepted.
     $tamper = sentinel($dist, array_merge(['check'], ['--config=' . $site . '/sentinel.json']));

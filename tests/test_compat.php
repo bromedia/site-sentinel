@@ -8,7 +8,16 @@ t('compat flags PHP 8-only syntax', function () {
         . "class A { function __construct(private int \$x) {} }\n"
         . "function f(int|string \$v): mixed {}\ntry {} catch (Exception) {}\n\$a?->b;\n";
     $v = compat_violations($bad, 'x');
-    assertTrue(count($v) >= 6, "only found:\n" . implode("\n", $v));
+    $out = implode("\n", $v);
+    foreach (['calls str_contains()', 'constructor property promotion', 'union type in parameter', 'mixed/static/never type', 'catch without a variable'] as $reason) {
+        assertContains($reason, $out);
+    }
+    // PHP 7.4's tokenizer does not know the PHP 8 token IDs.
+    foreach (['T_MATCH', 'T_NULLSAFE_OBJECT_OPERATOR'] as $token) {
+        if (defined($token)) {
+            assertContains($token, $out);
+        }
+    }
 });
 
 t('compat accepts PHP 7.4 code', function () {

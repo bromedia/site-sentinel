@@ -67,8 +67,8 @@ t('Analyzer: scanner hits in a plugin are Critical, held, and not double-reporte
     assertTrue(isset($r['held_groups']['wp-content/plugins/foo']));
 });
 
-t('Analyzer: a plugin update with a version bump is explained, without one it is a Warning', function () {
-    [$root, $c, $b] = wpFixture();
+t('Analyzer: legacy opt-in accepts a version bump, but holds quiet edits', function () {
+    [$root, $c, $b] = wpFixture([], ['auto_accept_unverified_updates' => true]);
     $old = VersionTracker::read($c);
     assertSame(['wp-content/plugins/foo' => '1.0'], $old);
 

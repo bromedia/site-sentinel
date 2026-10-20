@@ -65,7 +65,7 @@ final class ExternalScanner
      * @param array<int|string,string> $files rel => abs
      * @return Finding[]
      */
-    public function scan(array $files): array
+    public function scan(array $files, ?Budget $budget = null): array
     {
         $this->errors = [];
         if (!$files || !$this->enabled()) {
@@ -81,7 +81,7 @@ final class ExternalScanner
         $out = [];
         if ($this->clamscan !== null) {
             foreach (array_chunk(array_keys($byAbs), self::CLAM_CHUNK) as $chunk) {
-                $r = Proc::run(array_merge([$this->clamscan, '--no-summary', '--infected', '--'], $chunk), 300);
+                $r = Proc::run(array_merge([$this->clamscan, '--no-summary', '--infected', '--'], $chunk), $budget !== null ? $budget->timeout(300) : 300);
                 if ($r['timed_out'] || ($r['exit'] !== 0 && $r['exit'] !== 1)) {
                     $this->errors[] = 'clamscan failed (' . ($r['timed_out'] ? 'timed out' : 'exit ' . $r['exit']) . '): ' . $this->firstLine($r['err']);
                     continue;
@@ -100,7 +100,7 @@ final class ExternalScanner
                     $this->errors[] = 'yara skipped ' . (count($byAbs) - self::YARA_MAX_FILES) . ' file(s): per-run limit reached';
                     break;
                 }
-                $r = Proc::run([$this->yara, (string)$this->yaraRules, (string)$abs], 30);
+                $r = Proc::run([$this->yara, (string)$this->yaraRules, (string)$abs], $budget !== null ? $budget->timeout(30) : 30);
                 if ($r['timed_out'] || $r['exit'] !== 0) {
                     $this->errors[] = 'yara failed on ' . $rel . ' (' . ($r['timed_out'] ? 'timed out' : 'exit ' . $r['exit']) . '): ' . $this->firstLine($r['err']);
                     continue;

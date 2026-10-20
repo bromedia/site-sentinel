@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Sentinel;
@@ -13,12 +14,17 @@ Usage: php sentinel.php <command> [options]
 Commands:
   init          --root=DIR and at least one of --email=A[,B] --ntfy=URL --webhook=URL --file=PATH
                 [--name=NAME] [--profile=wordpress|generic] [--config=FILE] [--state=DIR]
-                [--no-wp-checksums] [--force]
+                [--no-wp-checksums] [--force] [--restart] (repeat init to resume)
   check         quick scan of new and changed files (run every few minutes)
   full          full scan: hash everything, verify WordPress checksums (run nightly)
   accept        accept the current state as known-good [--path=REL ...] [--self]
   update-rules  download, verify and install the latest rules bundle
   test-alert    send a test alert through every configured channel
+  doctor        read-only hosting/config checks and last scan history (no network or alerts)
+  cron          print cron entries using this PHP executable (does not install them)
+  db-init       trust a reviewed administrator/options snapshot (database.enabled required)
+  db-check      check database accounts/options and budgeted post content
+  db-accept     trust reviewed database changes [--scope=admins|options|all]
   version       print the version
 
 All commands except init read --config=FILE (default: $SENTINEL_CONFIG, else sentinel.json next to this script).
@@ -83,7 +89,7 @@ TXT;
             if ($cmd === 'init') {
                 return self::result(Init::run($opts, $script, $http));
             }
-            if (!in_array($cmd, ['check', 'full', 'accept', 'update-rules', 'test-alert'], true)) {
+            if (!in_array($cmd, ['check', 'full', 'accept', 'update-rules', 'test-alert', 'doctor', 'cron', 'db-init', 'db-check', 'db-accept'], true)) {
                 return ['exit' => 2, 'out' => [], 'err' => array_merge(["unknown command '$cmd'", ''], explode("\n", sprintf(self::USAGE, VERSION)))];
             }
             $configFile = isset($opts['config']) && is_string($opts['config'])
@@ -92,9 +98,29 @@ TXT;
             $config = Config::load($configFile);
             $config->addExclusion($script);
             $config->addExclusion($configFile);
+            if ($cmd === 'doctor') {
+                return self::result(Doctor::run($config, $script, $configFile));
+            }
+            if ($cmd === 'cron') {
+                return ['exit' => 0, 'out' => Cron::lines($script, $configFile), 'err' => []];
+            }
             $state = new State($config->stateDir);
             $channels = NotifierFactory::fromConfig($config, $http);
             $selfFiles = Init::selfFiles($script, $configFile, $state);
+            if (in_array($cmd, ['db-init','db-check','db-accept'], true)) {
+                $lock = Lock::acquire($state->path('lock'));
+                if ($lock === null) {
+                    return ['exit' => 2,'out' => [],'err' => ['another scan is in progress']];
+                }
+                try {
+                    $db = new DatabaseMonitor($config, $state, $channels);
+                    $budget = Budget::forConfig($config);
+                    return self::result($cmd === 'db-check' ? $db->check($budget) : $db->accept($budget, (string)($opts['scope'] ?? 'all'), $cmd === 'db-init', !empty($opts['force'])));
+                } finally {
+                    $lock->release();
+                }
+            }
+
 
             switch ($cmd) {
                 case 'check':

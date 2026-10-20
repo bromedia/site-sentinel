@@ -129,7 +129,7 @@ t('Monitor: a budget-limited scan resumes where it stopped and finishes (Review 
         $runs++;
     } while ($partial && $runs < 10);
     assertSame(2, $total);
-    assertSame(3, $runs);
+    assertTrue($runs > 1 && $runs < 10, 'bounded passes must finish without skipping changes');
     assertTrue(!isset($state->readJson('resume.json')['check']));
     assertContains('0 change(s)', $m->run('check')['lines'][0]);
     assertSame(0, count($n->sent));
@@ -188,7 +188,7 @@ t('Monitor: a WordPress plugin update is explained, silent, and advances stored 
         'wp-config.php' => '<?php',
         'wp-content/plugins/foo/foo.php' => "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// v1\n",
     ];
-    [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false]);
+    [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false, 'auto_accept_unverified_updates' => true]);
     $state->writeJson('versions.json', VersionTracker::read($config));
     bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
     $r = $m->run('check');

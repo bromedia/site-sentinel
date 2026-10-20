@@ -38,6 +38,10 @@ final class Config
     public $clamscanPath = '';
     public $yaraPath = '';
     public $yaraRules = '';
+    public $scanBatchFiles = 64;
+    public $continueFull = true;
+    public $autoAcceptUnverifiedUpdates = false;
+    public $database = [];
 
     /** @var string[] */
     private $extraExclude = [];
@@ -101,6 +105,16 @@ final class Config
         $c->clamscanPath = trim((string)($raw['clamscan_path'] ?? ''));
         $c->yaraPath = trim((string)($raw['yara_path'] ?? ''));
         $c->yaraRules = trim((string)($raw['yara_rules'] ?? ''));
+        $c->scanBatchFiles = self::int($raw, 'scan_batch_files', 64);
+        if ($c->scanBatchFiles > 1000) {
+            throw new ConfigException('scan_batch_files must not exceed 1000');
+        }
+        $c->continueFull = (bool)($raw['continue_full'] ?? true);
+        $c->autoAcceptUnverifiedUpdates = (bool)($raw['auto_accept_unverified_updates'] ?? false);
+        $c->database = DatabaseSettings::normalize($raw['database'] ?? []);
+        if ($c->database['enabled'] && $c->profile !== 'wordpress') {
+            throw new ConfigException('database monitoring requires the wordpress profile');
+        }
         return $c;
     }
 
@@ -131,6 +145,10 @@ final class Config
             'clamscan_path' => $this->clamscanPath,
             'yara_path' => $this->yaraPath,
             'yara_rules' => $this->yaraRules,
+            'scan_batch_files' => $this->scanBatchFiles,
+            'continue_full' => $this->continueFull,
+            'auto_accept_unverified_updates' => $this->autoAcceptUnverifiedUpdates,
+            'database' => $this->database,
         ];
     }
 

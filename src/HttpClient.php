@@ -12,6 +12,21 @@ interface HttpClient
     public function request(string $method, string $url, string $body = '', array $headers = [], int $timeout = 10): array;
 }
 
+final class BudgetHttp implements HttpClient
+{
+    private $inner;
+    private $budget;
+    public function __construct(HttpClient $inner, Budget $budget)
+    {
+        $this->inner = $inner;
+        $this->budget = $budget;
+    }
+    public function request(string $method, string $url, string $body = '', array $headers = [], int $timeout = 10): array
+    {
+        return $this->inner->request($method, $url, $body, $headers, $this->budget->timeout($timeout));
+    }
+}
+
 final class NativeHttp implements HttpClient
 {
     private $preferCurl;
@@ -80,7 +95,7 @@ final class NativeHttp implements HttpClient
         // PHP 8.4+ deprecates the magic $http_response_header variable.
         $responseHeaders = function_exists('http_get_last_response_headers')
             ? (http_get_last_response_headers() ?? [])
-            : (get_defined_vars()['http_response_header'] ?? []);
+            : ($http_response_header ?? []);
         foreach ($responseHeaders as $h) {
             if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string)$h, $m)) {
                 $status = (int)$m[1];
