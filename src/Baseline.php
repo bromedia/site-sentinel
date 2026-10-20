@@ -57,34 +57,35 @@ final class Baseline
         }
     }
 
+    /**
+     * Writes a new baseline from $records. The file is replaced only once every
+     * record has been written and the temp file closed cleanly; on any failure the
+     * previous baseline is left untouched and an exception is thrown.
+     */
     public static function write(string $file, iterable $records): int
     {
         $tmp = $file . '.tmp';
-        $fh = @fopen($tmp, 'wb');
-        if ($fh === false) {
-            throw new \RuntimeException("cannot write $tmp");
-        }
-        @chmod($tmp, 0600);
+        $fh = self::openTemp($tmp);
         $n = 0;
         try {
             foreach ($records as $r) {
-                fwrite($fh, self::formatLine($r));
+                self::put($fh, self::formatLine($r), $tmp);
                 $n++;
             }
         } catch (\Throwable $e) {
-            fclose($fh);
-            @unlink($tmp);
+            self::abandon($fh, $tmp);
             throw $e;
         }
-        fclose($fh);
-        if (!rename($tmp, $file)) {
-            @unlink($tmp);
-            throw new \RuntimeException("cannot replace $file");
-        }
+        self::install($fh, $tmp, $file);
         return $n;
     }
 
-    /** @param array<int|string, ?array> $updates path => record, or null to delete */
+    /**
+     * Merges $updates into $oldFile and installs the result as $newFile, with the
+     * same all-or-nothing guarantee as write().
+     *
+     * @param array<int|string, ?array> $updates path => record, or null to delete
+     */
     public static function applyUpdates(string $oldFile, array $updates, string $newFile): void
     {
         $keys = array_map('strval', array_keys($updates));
@@ -92,42 +93,85 @@ final class Baseline
         $n = count($keys);
         $i = 0;
         $tmp = $newFile . '.tmp';
-        $fh = @fopen($tmp, 'wb');
-        if ($fh === false) {
-            throw new \RuntimeException("cannot write $tmp");
-        }
-        @chmod($tmp, 0600);
+        $fh = self::openTemp($tmp);
         try {
             foreach (self::read($oldFile) as $rec) {
                 while ($i < $n && PathOrder::compare($keys[$i], $rec['path']) < 0) {
                     if ($updates[$keys[$i]] !== null) {
-                        fwrite($fh, self::formatLine($updates[$keys[$i]]));
+                        self::put($fh, self::formatLine($updates[$keys[$i]]), $tmp);
                     }
                     $i++;
                 }
                 if ($i < $n && $keys[$i] === $rec['path']) {
                     if ($updates[$keys[$i]] !== null) {
-                        fwrite($fh, self::formatLine($updates[$keys[$i]]));
+                        self::put($fh, self::formatLine($updates[$keys[$i]]), $tmp);
                     }
                     $i++;
                     continue;
                 }
-                fwrite($fh, self::formatLine($rec));
+                self::put($fh, self::formatLine($rec), $tmp);
             }
             for (; $i < $n; $i++) {
                 if ($updates[$keys[$i]] !== null) {
-                    fwrite($fh, self::formatLine($updates[$keys[$i]]));
+                    self::put($fh, self::formatLine($updates[$keys[$i]]), $tmp);
                 }
             }
         } catch (\Throwable $e) {
-            fclose($fh);
-            @unlink($tmp);
+            self::abandon($fh, $tmp);
             throw $e;
         }
-        fclose($fh);
-        if (!rename($tmp, $newFile)) {
+        self::install($fh, $tmp, $newFile);
+    }
+
+    /** @return resource */
+    private static function openTemp(string $tmp)
+    {
+        $fh = @fopen($tmp, 'wb');
+        if ($fh === false) {
+            throw new \RuntimeException("cannot write $tmp");
+        }
+        @chmod($tmp, 0600);
+        return $fh;
+    }
+
+    /**
+     * Writes all of $data or throws. fwrite() can write part of a buffer and
+     * report it (a full disk or quota typically shows up this way), then fail.
+     *
+     * @param resource $fh
+     */
+    private static function put($fh, string $data, string $tmp): void
+    {
+        $len = strlen($data);
+        $done = 0;
+        while ($done < $len) {
+            $w = @fwrite($fh, $done === 0 ? $data : substr($data, $done));
+            if ($w === false || $w === 0) {
+                throw new \RuntimeException("cannot write $tmp (disk full or over quota?)");
+            }
+            $done += $w;
+        }
+    }
+
+    /** @param resource $fh */
+    private static function abandon($fh, string $tmp): void
+    {
+        @fclose($fh);
+        @unlink($tmp);
+    }
+
+    /** @param resource $fh */
+    private static function install($fh, string $tmp, string $file): void
+    {
+        $flushed = @fflush($fh);
+        $closed = @fclose($fh);
+        if (!$flushed || !$closed) {
             @unlink($tmp);
-            throw new \RuntimeException("cannot replace $newFile");
+            throw new \RuntimeException("cannot finish writing $tmp (disk full or over quota?)");
+        }
+        if (!@rename($tmp, $file)) {
+            @unlink($tmp);
+            throw new \RuntimeException("cannot replace $file");
         }
     }
 }

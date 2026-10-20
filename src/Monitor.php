@@ -106,26 +106,39 @@ final class Monitor
             }
             $updates[$c['path']] = in_array($c['type'], ['removed', 'dropped'], true) ? null : $c['new'];
         }
-        if ($updates) {
-            Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
-        }
-
-        if ($d['complete']) {
-            unset($resume[$mode]);
-        } else {
-            $resume[$mode] = $d['stopped_at'];
-        }
-        $this->state->writeJson('resume.json', $resume);
-        if ($d['complete'] && $wpOn) {
-            $store = [];
-            foreach ($newVersions as $g => $v) {
-                if (!isset($a['held_groups'][$g])) {
-                    $store[$g] = $v;
-                } elseif (isset($oldVersions[$g])) {
-                    $store[$g] = $oldVersions[$g];
-                }
+        // Saving state must not stop this run's findings from being alerted: a full disk
+        // is exactly when something may be wrong. The baseline is saved first and the
+        // cursor only advances after it, so a failed save means this slice is rescanned.
+        try {
+            if ($updates) {
+                Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
             }
-            $this->state->writeJson('versions.json', $store);
+
+            if ($d['complete']) {
+                unset($resume[$mode]);
+            } else {
+                $resume[$mode] = $d['stopped_at'];
+            }
+            $this->state->writeJson('resume.json', $resume);
+            if ($d['complete'] && $wpOn) {
+                $store = [];
+                foreach ($newVersions as $g => $v) {
+                    if (!isset($a['held_groups'][$g])) {
+                        $store[$g] = $v;
+                    } elseif (isset($oldVersions[$g])) {
+                        $store[$g] = $oldVersions[$g];
+                    }
+                }
+                $this->state->writeJson('versions.json', $store);
+            }
+        } catch (\Throwable $e) {
+            $findings[] = new Finding(
+                Finding::CRITICAL,
+                'sentinel',
+                'state-write-failed',
+                'Scan state could not be saved (' . $e->getMessage() . '). The previous baseline was kept and this part of the site will be scanned again; free disk space or check the state directory.',
+                sha1($e->getMessage())
+            );
         }
 
         $log = new AlertLog($this->state);
