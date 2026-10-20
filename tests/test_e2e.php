@@ -83,6 +83,7 @@ t('end to end: a WordPress site with the tool installed inside the web root', fu
     $cfgJson = json_decode((string)file_get_contents($site . '/sentinel.json'), true);
     assertSame(120, $cfgJson['update_grace_seconds']);
     $cfgJson['update_grace_seconds'] = 0;
+    $cfgJson['auto_accept_unverified_updates'] = true; // Explicit legacy policy.
     file_put_contents($site . '/sentinel.json', json_encode($cfgJson));
     // Editing the config is itself a tripwire event until it is accepted.
     $tamper = sentinel($dist, array_merge(['check'], ['--config=' . $site . '/sentinel.json']));

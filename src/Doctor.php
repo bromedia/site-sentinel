@@ -60,8 +60,14 @@ final class Doctor
         }
         $lines[] = 'Watch: ' . implode(', ', $c->watch);
         $lines[] = 'Excluded (not scanned): ' . implode(', ', $c->exclusions());
-        $lines[] = 'Scan budget: ' . $c->budgetSeconds . 's / ' . $c->budgetMemoryMb . 'MB for file comparison; analysis and initialisation can take longer.';
-        $lines[] = 'No database checks are performed.';
+        $lines[] = 'Shared scan budget: ' . $c->budgetSeconds . 's / ' . $c->budgetMemoryMb . 'MB. Individual file I/O, checkpointing and alerts can overrun.';
+        $add($c->autoAcceptUnverifiedUpdates ? 1 : 0, $c->autoAcceptUnverifiedUpdates ? 'legacy unverified-update auto-acceptance enabled' : 'unverified updates require scoped review (strict default)');
+        if ($c->database['enabled']) {
+            $add(function_exists('mysqli_init') && defined('MYSQLI_OPT_READ_TIMEOUT') ? 0 : 2, 'database monitoring requires mysqli with read-timeout support');
+            $add(is_readable($c->stateDir . '/database-baseline.json') ? 0 : 2, 'review administrators/options and run db-init');
+            try { DatabaseCredentials::load($c); $add(0, 'database credentials readable without PHP execution (values hidden)'); }
+            catch (\Throwable $e) { $add(2, 'database credential source unreadable; use literals or a private credentials_file'); }
+        } else { $lines[] = 'Database monitoring disabled (opt-in).'; }
 
         $file = $c->stateDir . '/status.json';
         $status = is_readable($file) ? json_decode((string)file_get_contents($file), true) : [];
@@ -69,13 +75,14 @@ final class Doctor
             $add(1, 'scan history is unreadable; run check and full to refresh it');
             $status = [];
         }
-        foreach (['check', 'full'] as $mode) {
+        foreach ($c->database['enabled'] ? ['check', 'full', 'database'] : ['check', 'full'] as $mode) {
             $entry = $status[$mode] ?? [];
             $last = (int)($entry['last_run'] ?? 0);
             $complete = (int)($entry['last_complete'] ?? 0);
             $lines[] = $mode . ': last processed run ' . self::when($last) . '; last complete traversal ' . self::when($complete);
+            if (!empty($entry['last_error'])) { $add(1, $mode . ' last attempt failed; inspect cron stderr or the error alert'); }
             if ($last > 0 && empty($entry['complete'])) {
-                $add(1, $mode . ' has a partial scan pending; run ' . $mode . ' again to resume (check does not resume full)');
+                $add(1, $mode . ' has a partial scan pending; ' . ($mode === 'full' && !$c->continueFull ? 'run full to resume' : 'the next check continues it'));
             }
         }
         return ['exit' => $exit, 'lines' => $lines];

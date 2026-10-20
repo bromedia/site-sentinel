@@ -40,7 +40,7 @@ final class Differ
      *
      * @return array{changes: array, stopped_at: ?string, complete: bool, unreadable: string[]}
      */
-    public function diff(string $baselineFile, string $startAfter, Budget $budget, bool $full, bool $reanalyze = false): array
+    public function diff(string $baselineFile, string $startAfter, Budget $budget, bool $full, bool $reanalyze = false, int $maxEntries = 0): array
     {
         $walker = new Walker($this->config);
         $walk = $walker->walk($startAfter);
@@ -54,7 +54,7 @@ final class Differ
         $processed = 0;
         $complete = true;
         while (true) {
-            if ($processed > 0 && $budget->exceeded()) {
+            if ($processed > 0 && ($budget->exceeded() || ($maxEntries > 0 && $processed >= $maxEntries))) {
                 $complete = false;
                 break;
             }

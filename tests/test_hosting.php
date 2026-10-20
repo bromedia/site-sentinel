@@ -88,7 +88,7 @@ t('Doctor reports last complete coverage separately from partial progress', func
     assertSame(false, $history['complete']);
     $r = Doctor::run($c, tmpdir() . '/sentinel.php', tmpdir() . '/sentinel.json');
     assertContains('full has a partial scan pending', implode("\n", $r['lines']));
-    assertContains('check does not resume full', implode("\n", $r['lines']));
+    assertContains('the next check continues it', implode("\n", $r['lines']));
 });
 
 t('Full scan detects a newly installed rule in unchanged trusted code', function () {

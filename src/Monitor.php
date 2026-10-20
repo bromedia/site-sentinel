@@ -44,7 +44,7 @@ final class Monitor
         try {
             $lock = Lock::acquire($this->state->path('lock'));
         } catch (\Throwable $e) {
-            return $this->failed($e);
+            return $this->failed($e, $mode);
         }
         if ($lock === null) {
             return ['exit' => 0, 'lines' => ['another run is in progress; skipping']];
@@ -54,9 +54,24 @@ final class Monitor
             @proc_nice(10);
         }
         try {
-            return $this->execute($mode, $budget);
+            $budget = $budget ?? Budget::forConfig($this->config);
+            $fileBudget = $this->config->database['enabled'] ? $budget->slice(0.7) : $budget;
+            $pending = $this->state->readJson('resume.json');
+            $continue = $mode === 'check' && $this->config->continueFull && isset($pending['full']);
+            $result = $this->execute($mode, $continue ? $fileBudget->slice(0.5) : $fileBudget);
+            if ($continue && $result['exit'] !== 2) {
+                $next = $this->execute('full', $fileBudget);
+                $result['exit'] = max($result['exit'], $next['exit']);
+                $result['lines'] = array_merge($result['lines'], $next['lines']);
+            }
+            if ($this->config->database['enabled'] && $result['exit'] !== 2) {
+                $next = (new DatabaseMonitor($this->config, $this->state, $this->channels, $this->clock))->check($budget);
+                $result['exit'] = max($result['exit'], $next['exit']);
+                $result['lines'] = array_merge($result['lines'], $next['lines']);
+            }
+            return $result;
         } catch (\Throwable $e) {
-            return $this->failed($e);
+            return $this->failed($e, $mode);
         } finally {
             $lock->release();
         }
@@ -76,7 +91,7 @@ final class Monitor
         $startAfter = (string)($resume[$mode] ?? '');
 
         $wpOn = $this->config->profile === 'wordpress';
-        $wp = $wpOn && $this->config->wpChecksums ? new WpChecksum($this->http, $this->config, $this->state->path('cache')) : null;
+        $wp = $wpOn && $this->config->wpChecksums ? new WpChecksum(new BudgetHttp($this->http, $budget), $this->config, $this->state->path('cache')) : null;
         $analyzer = new Analyzer(
             $this->config,
             new PatternScanner($rules, $this->config->maxScanBytes),
@@ -85,50 +100,58 @@ final class Monitor
             ExternalScanner::fromConfig($this->config)
         );
 
-        $d = (new Differ($this->config))->diff($baselineFile, $startAfter, $budget, $full, $full);
         $oldVersions = $this->state->readJson('versions.json');
         $newVersions = $wpOn ? VersionTracker::read($this->config) : [];
         $now = ($this->clock)();
-        $a = $analyzer->analyze($d['changes'], $oldVersions, $newVersions, false, $now);
-
-        $findings = $a['findings'];
-        foreach ($d['unreadable'] as $dir) {
-            $findings[] = new Finding(Finding::WARNING, (string)$dir, 'unreadable-dir', 'Directory could not be read');
-        }
-        foreach ((new SelfCheck($this->state, $this->selfFiles))->check() as $f) {
-            $findings[] = $f;
-        }
-
-        $updates = [];
+        $cycleHolds = $this->state->readJson('held-groups.json');
+        $heldGroups = (array)($cycleHolds[$mode] ?? []);
+        $allFindings = [];
+        $info = [];
+        $notes = [];
         $changeCount = 0;
-        foreach ($d['changes'] as $c) {
-            if ($c['type'] === 'unchanged') {
-                continue;
+        do {
+            $d = (new Differ($this->config))->diff($baselineFile, $startAfter, $budget->slice(0.25), $full, $full, $this->config->scanBatchFiles);
+            $a = $analyzer->analyze($d['changes'], $oldVersions, $newVersions, false, $now, $budget);
+            $processed = array_slice($d['changes'], 0, $a['processed']);
+            if ($a['processed'] < count($d['changes'])) {
+                $d['complete'] = false;
+                $d['stopped_at'] = $processed ? $processed[count($processed)-1]['path'] : $startAfter;
             }
-            $changeCount++;
-            if (isset($a['hold'][$c['path']])) {
-                continue;
+            $heldGroups = array_merge($heldGroups, $a['held_groups']);
+            $info = array_slice(array_unique(array_merge($info, $a['info'])), 0, 100);
+            $notes = array_slice(array_unique(array_merge($notes, $a['notes'])), 0, 100);
+            foreach ($a['findings'] as $f) { $allFindings[$f->key()] = $f; }
+            foreach ($d['unreadable'] as $dir) {
+                $f = new Finding(Finding::WARNING, (string)$dir, 'unreadable-dir', 'Directory could not be read');
+                $allFindings[$f->key()] = $f;
             }
-            $updates[$c['path']] = in_array($c['type'], ['removed', 'dropped'], true) ? null : $c['new'];
-        }
-        if ($updates) {
-            Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
-        }
-
-        if ($d['complete']) {
-            unset($resume[$mode]);
-        } else {
-            $resume[$mode] = $d['stopped_at'];
-        }
-        $this->state->writeJson('resume.json', $resume);
+            $updates = [];
+            foreach ($processed as $c) {
+                if ($c['type'] === 'unchanged') { continue; }
+                $changeCount++;
+                if (!isset($a['hold'][$c['path']])) {
+                    $updates[$c['path']] = in_array($c['type'], ['removed','dropped'], true) ? null : $c['new'];
+                }
+            }
+            if ($updates) { Baseline::applyUpdates($baselineFile, $updates, $baselineFile); }
+            $startAfter = (string)$d['stopped_at'];
+            if ($d['complete']) {
+                unset($resume[$mode], $cycleHolds[$mode]);
+            } else {
+                $resume[$mode] = $startAfter;
+                $cycleHolds[$mode] = $heldGroups;
+            }
+            // Commit baseline before cursor: interrupted work may repeat, never skip.
+            $this->state->writeJson('held-groups.json', $cycleHolds);
+            $this->state->writeJson('resume.json', $resume);
+        } while (!$d['complete'] && !$budget->exceeded() && count($allFindings) < 1000);
+        $findings = array_values($allFindings);
+        foreach ((new SelfCheck($this->state, $this->selfFiles))->check() as $f) { $findings[] = $f; }
         if ($d['complete'] && $wpOn) {
             $store = [];
             foreach ($newVersions as $g => $v) {
-                if (!isset($a['held_groups'][$g])) {
-                    $store[$g] = $v;
-                } elseif (isset($oldVersions[$g])) {
-                    $store[$g] = $oldVersions[$g];
-                }
+                if (!isset($heldGroups[$g])) { $store[$g] = $v; }
+                elseif (isset($oldVersions[$g])) { $store[$g] = $oldVersions[$g]; }
             }
             $this->state->writeJson('versions.json', $store);
         }
@@ -138,7 +161,7 @@ final class Monitor
         $alertLines = [];
         $sent = [];
         if ($due) {
-            $digest = Digest::build($this->config->siteName, (string)gethostname(), $now, $due, $a['info'], $a['notes']);
+            $digest = Digest::build($this->config->siteName, (string)gethostname(), $now, $due, $info, $notes);
             $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
             foreach ($r['results'] as $line) {
                 $alertLines[] = 'alert ' . $line;
@@ -177,6 +200,8 @@ final class Monitor
         $previous = $status[$mode] ?? [];
         $status[$mode] = [
             'last_run' => $now,
+            'last_attempt' => $now,
+            'last_error' => '',
             'last_complete' => $d['complete'] ? $now : (int)($previous['last_complete'] ?? 0),
             'complete' => $d['complete'],
             'changes' => $changeCount,
@@ -194,8 +219,16 @@ final class Monitor
         return ['exit' => ($crit + $warn) > 0 ? 1 : 0, 'lines' => $lines];
     }
 
-    private function failed(\Throwable $e): array
+    private function failed(\Throwable $e, ?string $mode = null): array
     {
+        if ($mode !== null) {
+            try {
+                $status = $this->state->readJson('status.json');
+                $status[$mode]['last_attempt'] = ($this->clock)();
+                $status[$mode]['last_error'] = 'run failed; see cron stderr or the error alert';
+                $this->state->writeJson('status.json', $status);
+            } catch (\Throwable $ignored) {}
+        }
         return ['exit' => 2, 'lines' => array_merge(['error: ' . $e->getMessage()], $this->reportError($e->getMessage()))];
     }
 

@@ -5,13 +5,11 @@ namespace Sentinel;
 
 final class Init
 {
-    private const BATCH = 200;
-
     /**
      * @param array<string,mixed> $o options, see Cli::parse
      * @return array{exit:int, lines:string[]}
      */
-    public static function run(array $o, string $script, HttpClient $http): array
+    public static function run(array $o, string $script, HttpClient $http, ?Budget $budget = null): array
     {
         $root = (string)($o['root'] ?? '');
         if ($root === '' || !is_dir($root)) {
@@ -63,10 +61,14 @@ final class Init
         $config->addExclusion($script);
         $config->addExclusion($configFile);
         $state = new State($config->stateDir);
+        $lock = Lock::acquire($state->path('lock'));
+        if ($lock === null) { return self::fail('another scan or init is in progress'); }
+        try {
+        $budget = $budget ?? Budget::forConfig($config);
         $rulesFile = $state->path('rules.json');
         $rules = is_file($rulesFile) ? Rules::load($rulesFile) : Rules::builtin();
         $wpOn = $config->profile === 'wordpress';
-        $wp = $wpOn && $config->wpChecksums ? new WpChecksum($http, $config, $state->path('cache')) : null;
+        $wp = $wpOn && $config->wpChecksums ? new WpChecksum(new BudgetHttp($http, $budget), $config, $state->path('cache')) : null;
         $analyzer = new Analyzer(
             $config,
             new PatternScanner($rules, $config->maxScanBytes),
@@ -75,34 +77,16 @@ final class Init
             ExternalScanner::fromConfig($config)
         );
 
-        $differ = new Differ($config);
-        $findings = [];
-        $notes = [];
+        $scan = InitScan::run($config, $state, $analyzer, $script, $force, !empty($o['restart']), $budget);
+        if (!$scan['complete']) {
+            return ['exit'=>0,'lines'=>['Initial scan paused after ' . $scan['count'] . ' file(s); no baseline is active yet. Run the same init command again to resume. Use --restart to discard only unfinished initial-scan progress.']];
+        }
+        $findings = $scan['findings']; $notes = $scan['notes']; $symlinkDirs = $scan['symlinks']; $count = $scan['count'];
         $tmp = $state->path('baseline.init');
-        $symlinkDirs = [];
-        $records = (function () use ($config, $differ, $analyzer, &$findings, &$notes, &$symlinkDirs) {
-            $batch = [];
-            foreach ((new Walker($config))->walk() as $meta) {
-                [$rec, $unreadable] = $differ->record($meta);
-                if (($rec['mode'] & 0170000) === 0120000 && is_dir($config->abs($rec['path']))) {
-                    $target = @readlink($config->abs($rec['path']));
-                    $symlinkDirs[] = [$rec['path'], $target === false ? '?' : $target];
-                }
-                if ($analyzer->wantsAnalysis($rec)) {
-                    $batch[] = ['type' => 'new', 'path' => $rec['path'], 'old' => null, 'new' => $rec, 'stealth' => false, 'content_same' => false, 'unreadable' => $unreadable];
-                    if (count($batch) >= self::BATCH) {
-                        self::flush($analyzer, $batch, $findings, $notes);
-                    }
-                }
-                yield $rec;
-            }
-            self::flush($analyzer, $batch, $findings, $notes);
-        })();
-        $count = Baseline::write($tmp, $records);
-
         $lines = [];
         if ($findings && !$force) {
             @unlink($tmp);
+            @unlink($state->path('init-progress.json'));
             $lines[] = 'The site already contains files that look malicious, so no baseline was created';
             $lines[] = '(a baseline taken now would treat them as known-good):';
             foreach ($findings as $f) {
@@ -131,6 +115,7 @@ final class Init
         (new AlertLog($state))->clear();
         @unlink($state->path('resume.json'));
         $state->writeJson('status.json', []);
+        @unlink($state->path('init-progress.json'));
 
         $lines[] = sprintf('Created %s (profile %s) and a baseline of %d file(s).', $configFile, $config->profile, $count);
         foreach ($findings as $f) {
@@ -150,6 +135,7 @@ final class Init
         $lines[] = 'Recommended: set heartbeat_url in the config to a healthchecks.io-style URL so you are told if Sentinel stops running.';
         $lines[] = 'Run doctor for hosting checks and scan history. Cron keeps stderr visible; configure cron email or capture/rotate it in a private log.';
         return ['exit' => 0, 'lines' => $lines];
+        } finally { $lock->release(); }
     }
 
     /** @return array<string,string> */
@@ -162,21 +148,6 @@ final class Init
             'config' => $c !== false ? $c : $configFile,
             'rules' => $state->path('rules.json'),
         ];
-    }
-
-    private static function flush(Analyzer $analyzer, array &$batch, array &$findings, array &$notes): void
-    {
-        if (!$batch) {
-            return;
-        }
-        $r = $analyzer->analyze($batch, [], [], true);
-        foreach ($r['findings'] as $f) {
-            $findings[] = $f;
-        }
-        foreach ($r['notes'] as $n) {
-            $notes[] = $n;
-        }
-        $batch = [];
     }
 
     private static function fail(string $msg): array

@@ -23,6 +23,21 @@ final class Budget
         return ($this->clock)() >= $this->deadline || memory_get_usage(true) >= $this->memoryBytes;
     }
 
+    public function remaining(): float
+    {
+        return max(0.0, $this->deadline - ($this->clock)());
+    }
+
+    public function slice(float $fraction): Budget
+    {
+        return new Budget($this->remaining() * $fraction, $this->memoryBytes, $this->clock);
+    }
+
+    public function timeout(int $maximum): int
+    {
+        return max(1, min($maximum, (int)ceil($this->remaining())));
+    }
+
     public static function forConfig(Config $c): Budget
     {
         $limit = self::iniBytes((string)ini_get('memory_limit'));

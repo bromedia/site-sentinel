@@ -12,6 +12,21 @@ interface HttpClient
     public function request(string $method, string $url, string $body = '', array $headers = [], int $timeout = 10): array;
 }
 
+final class BudgetHttp implements HttpClient
+{
+    private $inner;
+    private $budget;
+    public function __construct(HttpClient $inner, Budget $budget)
+    {
+        $this->inner = $inner;
+        $this->budget = $budget;
+    }
+    public function request(string $method, string $url, string $body = '', array $headers = [], int $timeout = 10): array
+    {
+        return $this->inner->request($method, $url, $body, $headers, $this->budget->timeout($timeout));
+    }
+}
+
 final class NativeHttp implements HttpClient
 {
     private $preferCurl;
