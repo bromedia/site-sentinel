@@ -8,6 +8,8 @@ final class SelfCheck
     private $state;
     /** @var array<string,string> */
     private $files;
+    /** @var string[] labels found changed by the last check() */
+    private $untrusted = [];
 
     /** @param array<string,string> $files label => absolute path */
     public function __construct(State $state, array $files)
@@ -16,7 +18,13 @@ final class SelfCheck
         $this->files = $files;
     }
 
-    /** @return Finding[] */
+    /**
+     * The recorded map is the whole truth: a label recorded as '' (or not recorded at all)
+     * means the file was absent, so a file that appears later, such as a hand-placed
+     * rules.json or dismissals.json, is flagged like any other change.
+     *
+     * @return Finding[]
+     */
     public function check(): array
     {
         $stored = $this->state->readJson('selfcheck.json');
@@ -25,33 +33,58 @@ final class SelfCheck
             return [];
         }
         $out = [];
+        $this->untrusted = [];
         foreach ($this->files as $label => $path) {
-            $was = $stored[$label] ?? null;
-            if ($was === null) {
+            $was = (string)($stored[$label] ?? '');
+            $now = self::hashOf($path);
+            if ($now === $was) {
                 continue;
             }
-            $now = is_file($path) ? (string)hash_file('sha256', $path) : '';
-            if ($now !== $was) {
-                $out[] = new Finding(
-                    Finding::CRITICAL,
-                    $label . ' (' . $path . ')',
-                    'self-tamper',
-                    $now === '' ? 'Sentinel file is missing' : 'Sentinel file changed since it was last accepted',
-                    $now
-                );
+            $this->untrusted[] = (string)$label;
+            if ($was === '') {
+                $message = 'Sentinel file appeared since the Sentinel files were last accepted';
+            } elseif ($now === '') {
+                $message = 'Sentinel file is missing';
+            } else {
+                $message = 'Sentinel file changed since it was last accepted';
             }
+            $out[] = new Finding(Finding::CRITICAL, $label . ' (' . $path . ')', 'self-tamper', $message, $now);
         }
         return $out;
     }
 
+    /** @return string[] labels of the files the last check() found changed, missing or new */
+    public function untrusted(): array
+    {
+        return $this->untrusted;
+    }
+
+    /** Trusts the current state of every tracked file (accept --self, init). */
     public function record(): void
     {
         $map = [];
         foreach ($this->files as $label => $path) {
-            if (is_file($path)) {
-                $map[$label] = (string)hash_file('sha256', $path);
-            }
+            $map[$label] = self::hashOf($path);
         }
         $this->state->writeJson('selfcheck.json', $map);
+    }
+
+    /**
+     * Trusts the current state of one file that Sentinel itself just wrote (rules, dismissals),
+     * leaving the others alone so an unrelated tampered file stays flagged.
+     */
+    public function trust(string $label): void
+    {
+        if (!isset($this->files[$label])) {
+            throw new \InvalidArgumentException("unknown Sentinel file '$label'");
+        }
+        $map = $this->state->readJson('selfcheck.json');
+        $map[$label] = self::hashOf($this->files[$label]);
+        $this->state->writeJson('selfcheck.json', $map);
+    }
+
+    private static function hashOf(string $path): string
+    {
+        return is_file($path) ? (string)hash_file('sha256', $path) : '';
     }
 }

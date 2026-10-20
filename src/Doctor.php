@@ -62,6 +62,9 @@ final class Doctor
         $lines[] = 'Excluded (not scanned): ' . implode(', ', $c->exclusions());
         $lines[] = 'Scan budget: ' . $c->budgetSeconds . 's / ' . $c->budgetMemoryMb . 'MB for file comparison; analysis and initialisation can take longer.';
         $lines[] = 'No database checks are performed.';
+        $dismissed = is_readable($c->stateDir . '/' . Dismissals::FILE) ? json_decode((string)file_get_contents($c->stateDir . '/' . Dismissals::FILE), true) : [];
+        $n = is_array($dismissed) ? count((array)($dismissed['dismissals'] ?? [])) : 0;
+        $lines[] = $n > 0 ? $n . ' dismissed finding(s); review them with: php sentinel.php dismiss --list' : 'No dismissed findings.';
 
         $file = $c->stateDir . '/status.json';
         $status = is_readable($file) ? json_decode((string)file_get_contents($file), true) : [];

@@ -30,6 +30,12 @@ final class Finding
         return sha1($this->rule . "\0" . $this->path . "\0" . $this->hash);
     }
 
+    /** Short form of key() shown to the owner, for example to dismiss a reviewed false positive. */
+    public function id(): string
+    {
+        return substr($this->key(), 0, 12);
+    }
+
     public static function label(int $severity): string
     {
         if ($severity >= self::CRITICAL) {

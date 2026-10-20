@@ -52,6 +52,11 @@ final class AlertLog
             $k = $f->key();
             $e = $this->entries[$k] ?? ['first' => $now, 'alerted' => 0, 'seen' => $now, 'sev' => $f->severity];
             $e['seen'] = $now;
+            // What was reported, so "dismiss <id>" can only act on a finding the owner was shown.
+            $e['rule'] = $f->rule;
+            $e['path'] = $f->path;
+            $e['hash'] = $f->hash;
+            $e['message'] = $f->message;
             if (isset($sentKeys[$k])) {
                 $e['alerted'] = $now;
             }
@@ -63,6 +68,21 @@ final class AlertLog
             }
         }
         $this->state->writeJson('alerts.json', $this->entries);
+    }
+
+    /** @return array<string,array> finding key => entry */
+    public function entries(): array
+    {
+        return $this->entries;
+    }
+
+    /** Forgets one finding so that it alerts again the next time it is detected. */
+    public function forget(string $key): void
+    {
+        if (isset($this->entries[$key])) {
+            unset($this->entries[$key]);
+            $this->state->writeJson('alerts.json', $this->entries);
+        }
     }
 
     public function clear(): void

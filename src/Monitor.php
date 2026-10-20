@@ -69,8 +69,25 @@ final class Monitor
         if (!is_file($baselineFile)) {
             throw new \RuntimeException('no baseline found; run "init" first');
         }
+        // Check Sentinel's own files first: a rules or dismissals file changed outside Sentinel is
+        // reported and not used, so a hand-placed file cannot switch detection off for this run.
+        $selfCheck = new SelfCheck($this->state, $this->selfFiles);
+        $selfFindings = $selfCheck->check();
+        $untrusted = $selfCheck->untrusted();
+        $selfNotes = [];
         $rulesFile = $this->state->path('rules.json');
-        $rules = is_file($rulesFile) ? Rules::load($rulesFile) : Rules::builtin();
+        if (in_array('rules', $untrusted, true)) {
+            $rules = Rules::builtin();
+            $selfNotes[] = 'rules.json changed outside update-rules, so the built-in rules were used; run accept --self only if you changed it deliberately';
+        } else {
+            $rules = is_file($rulesFile) ? Rules::load($rulesFile) : Rules::builtin();
+        }
+        $dismissals = null;
+        if (in_array('dismissals', $untrusted, true)) {
+            $selfNotes[] = 'dismissals.json changed outside the dismiss command, so no dismissals were applied; run accept --self only if you changed it deliberately';
+        } else {
+            $dismissals = new Dismissals($this->state);
+        }
         $budget = $budget ?? Budget::forConfig($this->config);
         $resume = $this->state->readJson('resume.json');
         $startAfter = (string)($resume[$mode] ?? '');
@@ -82,7 +99,8 @@ final class Monitor
             new PatternScanner($rules, $this->config->maxScanBytes),
             new LocationScanner($this->config),
             $wp,
-            ExternalScanner::fromConfig($this->config)
+            ExternalScanner::fromConfig($this->config),
+            $dismissals
         );
 
         $d = (new Differ($this->config))->diff($baselineFile, $startAfter, $budget, $full);
@@ -95,9 +113,10 @@ final class Monitor
         foreach ($d['unreadable'] as $dir) {
             $findings[] = new Finding(Finding::WARNING, (string)$dir, 'unreadable-dir', 'Directory could not be read');
         }
-        foreach ((new SelfCheck($this->state, $this->selfFiles))->check() as $f) {
+        foreach ($selfFindings as $f) {
             $findings[] = $f;
         }
+        $a['notes'] = array_merge($selfNotes, $a['notes']);
 
         $updates = [];
         foreach ($d['changes'] as $c) {
@@ -176,7 +195,7 @@ final class Monitor
         )];
         foreach ($findings as $f) {
             if ($f->severity >= Finding::WARNING) {
-                $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule;
+                $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
             }
         }
         $lines = array_merge($lines, $alertLines);

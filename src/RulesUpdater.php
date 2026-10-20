@@ -87,7 +87,7 @@ final class RulesUpdater
             @unlink($tmp);
             throw new \RuntimeException('cannot install ' . $file);
         }
-        $this->self->record();
+        $this->self->trust('rules');
         $lines[] = sprintf('installed rules version %d (%d pattern(s), %d known-bad hash(es))', $new->version, count($new->patterns), count($new->hashes));
         return $lines;
     }
