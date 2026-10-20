@@ -92,7 +92,112 @@ final class Digest
             }
             $lines[] = '';
         }
-        return ['subject' => $subject, 'body' => implode("\n", $lines), 'top' => $top];
+        return ['subject' => $subject, 'body' => implode("\n", array_map([Finding::class, 'line'], $lines)), 'top' => $top];
+    }
+
+    /** Problems with Sentinel itself rather than with the website's files. */
+    private const MONITORING = ['run-error', 'state-write-failed', 'self-tamper', 'unreadable', 'unreadable-dir', 'scan-error'];
+    /** Changes to review, as opposed to files that look suspicious in themselves. */
+    private const CHANGES = [
+        'unexplained-change', 'unverified-update', 'sensitive-file-changed', 'sensitive-file-removed',
+        'core-file-removed', 'symlink', 'world-writable',
+    ];
+
+    /** The digest the config asks for: technical (commands) or client (plain language). */
+    public static function forConfig(Config $c, int $ts, array $findings, array $info, array $notes): array
+    {
+        return $c->audience === 'client'
+            ? self::forClient($c->siteName, $ts, $findings, $info, $notes, $c->contact)
+            : self::build($c->siteName, (string)gethostname(), $ts, $findings, $info, $notes);
+    }
+
+    /**
+     * Plain language for site owners: what happened and who to contact, never a command to run.
+     * The technical detail follows at the end, for the developer the email gets forwarded to.
+     *
+     * @param Finding[] $findings
+     * @param string[] $info
+     * @param string[] $notes
+     * @return array{subject: string, body: string, top: int}
+     */
+    public static function forClient(string $site, int $ts, array $findings, array $info, array $notes, string $contact): array
+    {
+        $who = $contact !== '' ? $contact : 'your web developer';
+        $groups = ['hack' => [], 'check' => [], 'changes' => [], 'monitoring' => []];
+        $top = Finding::INFO;
+        foreach ($findings as $f) {
+            $top = max($top, $f->severity);
+            if (in_array($f->rule, self::MONITORING, true)) {
+                $groups['monitoring'][] = $f;
+            } elseif (in_array($f->rule, self::CHANGES, true)) {
+                $groups['changes'][] = $f;
+            } elseif ($f->severity >= Finding::CRITICAL) {
+                $groups['hack'][] = $f;
+            } else {
+                $groups['check'][] = $f;
+            }
+        }
+        if ($groups['hack']) {
+            $subject = "Security alert: $site may have been hacked";
+        } elseif ($groups['monitoring']) {
+            $subject = "Security monitoring problem on $site";
+        } elseif ($groups['check']) {
+            $subject = "Please check: unusual files on $site";
+        } else {
+            $subject = "Website files changed on $site";
+        }
+
+        $lines = ["Site Sentinel: $site", date('j M Y, H:i T', $ts), '']; // the server's local time for owners
+        $paths = function (array $fs): array {
+            $out = [];
+            foreach ($fs as $f) {
+                $out['  - ' . $f->path] = true;
+            }
+            return array_keys($out);
+        };
+        if ($groups['hack']) {
+            $lines[] = 'POSSIBLE HACK';
+            $lines[] = 'Files were found that look like hacking tools or tampering:';
+            $lines = array_merge($lines, $paths($groups['hack']));
+            $lines[] = "What to do: contact $who today and forward them this email.";
+            $lines[] = "Please don't delete or change anything yourself: these files help";
+            $lines[] = 'show how the attacker got in.';
+            $lines[] = '';
+        }
+        if ($groups['check']) {
+            $lines[] = 'UNUSUAL FILES';
+            $lines[] = "These files are unusual for a website. They may be harmless, but $who";
+            $lines[] = 'should check them:';
+            $lines = array_merge($lines, $paths($groups['check']));
+            $lines[] = '';
+        }
+        if ($groups['changes']) {
+            $lines[] = 'WEBSITE FILES CHANGED';
+            $lines[] = 'Files changed without an update that could be verified:';
+            $lines = array_merge($lines, $paths($groups['changes']));
+            $lines[] = "If you or $who just installed updates or made changes, this is";
+            $lines[] = "expected. If nobody did, contact $who.";
+            $lines[] = '';
+        }
+        if ($groups['monitoring']) {
+            $lines[] = 'MONITORING PROBLEM';
+            $lines[] = 'Site Sentinel could not fully check the website, or its own files changed.';
+            $lines[] = "Until this is fixed, problems may go unnoticed. Please forward this email to $who.";
+            $lines[] = '';
+        }
+        $lines[] = '--';
+        $lines[] = 'Technical details for your web developer:';
+        foreach ($findings as $f) {
+            $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->rule . ' ' . $f->path . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
+            $lines[] = '    ' . $f->message;
+        }
+        foreach ($notes as $n) {
+            $lines[] = '  note: ' . $n;
+        }
+        foreach ($info as $i) {
+            $lines[] = '  info: ' . $i;
+        }
+        return ['subject' => $subject, 'body' => implode("\n", array_map([Finding::class, 'line'], $lines)), 'top' => $top];
     }
 
     private static function action(Finding $f): string

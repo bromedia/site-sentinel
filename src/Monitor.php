@@ -71,7 +71,10 @@ final class Monitor
         }
         // Check Sentinel's own files first: a rules or dismissals file changed outside Sentinel is
         // reported and not used, so a hand-placed file cannot switch detection off for this run.
-        $selfCheck = new SelfCheck($this->state, $this->selfFiles);
+        // settings.txt is edited by its owner and announced by Run, so it is not tamper-checked here.
+        $tracked = $this->selfFiles;
+        unset($tracked['settings']);
+        $selfCheck = new SelfCheck($this->state, $tracked);
         $selfFindings = $selfCheck->check();
         $untrusted = $selfCheck->untrusted();
         $selfNotes = [];
@@ -172,7 +175,7 @@ final class Monitor
         $alertLines = [];
         $sent = [];
         if ($due) {
-            $digest = Digest::build($this->config->siteName, (string)gethostname(), $now, $due, $a['info'], $a['notes']);
+            $digest = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes']);
             $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
             foreach ($r['results'] as $line) {
                 $alertLines[] = 'alert ' . $line;
@@ -202,7 +205,7 @@ final class Monitor
         )];
         foreach ($findings as $f) {
             if ($f->severity >= Finding::WARNING) {
-                $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
+                $lines[] = Finding::line('  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : ''));
             }
         }
         $lines = array_merge($lines, $alertLines);
@@ -249,7 +252,7 @@ final class Monitor
             $due = $log->due([$f], $now, $this->config->remindHours * 3600);
             $sent = [];
             if ($due) {
-                $digest = Digest::build($this->config->siteName, (string)gethostname(), $now, $due, [], []);
+                $digest = Digest::forConfig($this->config, $now, $due, [], []);
                 $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
                 foreach ($r['results'] as $line) {
                     $lines[] = 'alert ' . $line;

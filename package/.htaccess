@@ -1,0 +1,9 @@
+# Site Sentinel belongs outside the public website folder. If this folder ever ends up inside it,
+# block web access to its settings and records anyway.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>

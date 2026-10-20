@@ -17,7 +17,7 @@ final class Dismissals
     private const NOT_DISMISSABLE = [
         'unexplained-change', 'unverified-update', 'sensitive-file-changed', 'sensitive-file-removed',
         'core-file-removed', 'symlink', 'world-writable', 'stealth-modification', 'self-tamper',
-        'run-error', 'state-write-failed', 'unreadable', 'unreadable-dir', 'scan-error',
+        'run-error', 'state-write-failed', 'unreadable', 'unreadable-dir', 'scan-error', 'setup',
     ];
 
     private const REASON_MAX = 500;

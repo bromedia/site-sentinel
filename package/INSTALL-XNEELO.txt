@@ -1,0 +1,81 @@
+SITE SENTINEL: INSTALLING ON XNEELO WEB HOSTING
+================================================
+
+Site Sentinel watches your website's files and emails you if something looks like a hack.
+Setting it up takes about 10 minutes and needs no technical tools: only the xneelo Control
+Panel.
+
+You will need:
+  - your xneelo Control Panel login
+  - your website's FTP username (in the Control Panel, under your web hosting's FTP users)
+
+
+1. UPLOAD AND EXTRACT
+   a. Log in to the xneelo Control Panel and open your Web Hosting.
+   b. Under Hosting tools, open File Manager.
+   c. Under Files and Folders, choose Home Directory. Do NOT open public_html.
+   d. Upload site-sentinel.zip here. Then use the 3-dot menu next to it and choose Extract.
+   e. You should now see a folder called "sentinel" next to "public_html".
+      It must not be inside public_html. You can delete site-sentinel.zip.
+
+2. ENTER YOUR EMAIL ADDRESS
+   a. Open the sentinel folder and open settings.txt in the file editor.
+   b. Replace you@example.com with the address that should receive alerts.
+      For more people, add more lines that start with "email =".
+   c. Change "My website" to your website's name.
+   d. If your web developer gave you a "heartbeat =" line, paste it at the end. Save.
+
+3. SCHEDULE IT
+   a. In the Control Panel, open the Cronjob Manager for your Web Hosting.
+   b. Add a cronjob with this command, replacing YOUR-FTP-USERNAME with your FTP username:
+
+        /usr/bin/php-wrapper /usr/home/YOUR-FTP-USERNAME/sentinel/sentinel.php run
+
+   c. Set it to run every 2 hours (the most often xneelo allows).
+   d. Leave the cronjob notification email empty: Site Sentinel sends its own emails.
+
+4. START IT NOW
+   a. Use the 3-dot menu next to the new cronjob and choose Run.
+   b. Within about 15 minutes you should receive an email:
+        "Site Sentinel is now protecting <your website>"
+      Check your spam folder too. If it is there, mark it as "not spam".
+
+That's it. From now on you only hear from Site Sentinel when something needs attention.
+When an alert arrives, forward it to the contact named in it.
+
+
+IF NO EMAIL ARRIVES WITHIN AN HOUR
+   - Check that the "sentinel" folder is next to "public_html", not inside it.
+   - Check the FTP username in the cronjob command.
+   - Put your email address in the cronjob notification email, choose Run again, and forward
+     whatever you receive to your web developer.
+
+
+GOOD TO KNOW
+   - Checks run every 2 hours, with a deeper scan once a day, so a problem can take up to
+     about 2 hours to be noticed.
+   - You can edit settings.txt later, for example to change who receives alerts. Both the
+     old and the new addresses are told about the change. If the file has a mistake, Site
+     Sentinel keeps using the last settings that worked and emails you about the mistake.
+   - Updating or removing Site Sentinel is a job for your web developer.
+
+
+FOR YOUR WEB DEVELOPER
+   One-off commands run as a temporary cronjob: add it with the command below, put your
+   address in its notification email, choose Run, read the email, then delete the cronjob.
+     /usr/bin/php-wrapper /usr/home/FTP-USERNAME/sentinel/sentinel.php COMMAND
+
+   - Updating Sentinel: upload only the new sentinel.php into the sentinel folder (extracting
+     the whole ZIP again would reset settings.txt), then run "accept --self". It lists what
+     it now trusts.
+   - A reviewed false positive: "dismiss <id> --reason=..." (the id is in the alert).
+   - Approving an update or change it reported: "accept --path=<path from the alert>".
+   - Diagnostics: "doctor" (also shows which PHP mode the cron wrapper uses).
+   - Setting it up again from scratch: delete the "state" folder inside the sentinel folder
+     and create an empty SETUP-PENDING.txt next to sentinel.php. Sentinel will not set itself
+     up again over an earlier install, because that would accept whatever is on the site.
+   - Older accounts that serve HTTPS from public_ssl: set "site_root" in sentinel.json to
+     "../public_ssl".
+   - A heartbeat (for example a free healthchecks.io check per site, alerting you) is the
+     only thing that notices if someone with access to the site's files switches Sentinel
+     off. Everything else Sentinel keeps on the server can be edited by that person.

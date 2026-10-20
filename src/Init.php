@@ -63,10 +63,70 @@ final class Init
         $config->addExclusion($script);
         $config->addExclusion($configFile);
         $state = new State($config->stateDir);
+        $scan = self::scan($config, $state, $http, self::selfFiles($script, $configFile, $state));
+        $findings = $scan['findings'];
+        $notes = $scan['notes'];
+        $symlinkDirs = $scan['symlinkDirs'];
+        $tmp = $scan['tmp'];
+        $count = $scan['count'];
+
+        $lines = [];
+        if ($findings && !$force) {
+            @unlink($tmp);
+            $lines[] = 'The site already contains files that look malicious, so no baseline was created';
+            $lines[] = '(a baseline taken now would treat them as known-good):';
+            foreach ($findings as $f) {
+                $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule . ': ' . $f->message;
+            }
+            $lines[] = 'Clean the site, then run init again. To accept the risk and baseline anyway, add --force.';
+            return ['exit' => 1, 'lines' => $lines];
+        }
+        // The config is written only once the scan has passed, so a refused init leaves nothing behind.
+        $json = json_encode($config->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($json === false || file_put_contents($configFile, $json . "\n") === false) {
+            @unlink($tmp);
+            return self::fail("cannot write $configFile");
+        }
+        @chmod($configFile, 0600);
+        if (!self::install($config, $state, $tmp, self::selfFiles($script, $configFile, $state))) {
+            return self::fail('cannot install the baseline');
+        }
+
+        $lines[] = sprintf('Created %s (profile %s) and a baseline of %d file(s).', $configFile, $config->profile, $count);
+        foreach ($findings as $f) {
+            $lines[] = 'WARNING: baselined despite ' . Finding::label($f->severity) . ' ' . $f->path . ' (' . $f->rule . ')';
+        }
+        foreach (array_unique($notes) as $n) {
+            $lines[] = 'note: ' . $n;
+        }
+        foreach ($symlinkDirs as [$path, $target]) {
+            $lines[] = sprintf("note: '%s' is a symlink to a directory (%s). Sentinel does not follow symlinks, so nothing inside it is monitored: set up a second config with site_root set to the target.", $path, $target);
+        }
+        $lines[] = '';
+        $lines[] = 'Add these lines to the crontab of the account that owns the site (crontab -e, or cPanel > Cron Jobs):';
+        $lines = array_merge($lines, $cron);
+        $lines[] = '';
+        $lines[] = 'Next, confirm alerts arrive: ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' test-alert --config=' . escapeshellarg($configFile);
+        $lines[] = 'Recommended: set heartbeat_url in the config to a healthchecks.io-style URL so you are told if Sentinel stops running.';
+        $lines[] = 'Run doctor for hosting checks and scan history. Cron keeps stderr visible; configure cron email or capture/rotate it in a private log.';
+        return ['exit' => 0, 'lines' => $lines];
+    }
+
+    /**
+     * Walks the whole site once, analysing what a new file would get, and writes a candidate
+     * baseline to a temporary file. Nothing is trusted yet: install() does that.
+     *
+     * @param array<string,string> $selfFiles Sentinel's own files: a rules.json is used only if it is trusted
+     * @return array{tmp:string, count:int, findings:Finding[], notes:string[], symlinkDirs:array, core_verified:?bool}
+     */
+    public static function scan(Config $config, State $state, HttpClient $http, array $selfFiles = []): array
+    {
         $rulesFile = $state->path('rules.json');
-        $rules = is_file($rulesFile) ? Rules::load($rulesFile) : Rules::builtin();
-        $wpOn = $config->profile === 'wordpress';
-        $wp = $wpOn && $config->wpChecksums ? new WpChecksum($http, $config, $state->path('cache')) : null;
+        // A rules file nobody vouches for (one dropped into a fresh or reset state folder) must
+        // not decide what the very first baseline accepts.
+        $trusted = isset($selfFiles['rules']) && (new SelfCheck($state, $selfFiles))->isTrusted('rules');
+        $rules = is_file($rulesFile) && $trusted ? Rules::load($rulesFile) : Rules::builtin();
+        $wp = $config->profile === 'wordpress' && $config->wpChecksums ? new WpChecksum($http, $config, $state->path('cache')) : null;
         $analyzer = new Analyzer(
             $config,
             new PatternScanner($rules, $config->maxScanBytes),
@@ -99,61 +159,28 @@ final class Init
             self::flush($analyzer, $batch, $findings, $notes);
         })();
         $count = Baseline::write($tmp, $records);
+        return ['tmp' => $tmp, 'count' => $count, 'findings' => $findings, 'notes' => array_values(array_unique($notes)), 'symlinkDirs' => $symlinkDirs, 'core_verified' => $wp !== null ? $wp->coreVerified() : null];
+    }
 
-        $lines = [];
-        if ($findings && !$force) {
-            @unlink($tmp);
-            $lines[] = 'The site already contains files that look malicious, so no baseline was created';
-            $lines[] = '(a baseline taken now would treat them as known-good):';
-            foreach ($findings as $f) {
-                $lines[] = '  ' . Finding::label($f->severity) . ' ' . $f->path . ' ' . $f->rule . ': ' . $f->message;
-            }
-            $lines[] = 'Clean the site, then run init again. To accept the risk and baseline anyway, add --force.';
-            return ['exit' => 1, 'lines' => $lines];
-        }
-        // The config is written only once the scan has passed, so a refused init leaves nothing behind.
-        $json = json_encode($config->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        if ($json === false || file_put_contents($configFile, $json . "\n") === false) {
-            @unlink($tmp);
-            return self::fail("cannot write $configFile");
-        }
-        @chmod($configFile, 0600);
+    /** Makes a scanned baseline the trusted one and starts monitoring from a clean slate. */
+    public static function install(Config $config, State $state, string $tmp, array $selfFiles): bool
+    {
         if (!rename($tmp, $state->path('baseline.txt'))) {
             @unlink($tmp);
-            return self::fail('cannot install the baseline');
+            return false;
         }
-
-        if ($wpOn) {
+        if ($config->profile === 'wordpress') {
             $state->writeJson('versions.json', VersionTracker::read($config));
         }
-        $selfFiles = self::selfFiles($script, $configFile, $state);
         (new SelfCheck($state, $selfFiles))->record();
         (new AlertLog($state))->clear();
         @unlink($state->path('resume.json'));
         $state->writeJson('status.json', []);
-
-        $lines[] = sprintf('Created %s (profile %s) and a baseline of %d file(s).', $configFile, $config->profile, $count);
-        foreach ($findings as $f) {
-            $lines[] = 'WARNING: baselined despite ' . Finding::label($f->severity) . ' ' . $f->path . ' (' . $f->rule . ')';
-        }
-        foreach (array_unique($notes) as $n) {
-            $lines[] = 'note: ' . $n;
-        }
-        foreach ($symlinkDirs as [$path, $target]) {
-            $lines[] = sprintf("note: '%s' is a symlink to a directory (%s). Sentinel does not follow symlinks, so nothing inside it is monitored: set up a second config with site_root set to the target.", $path, $target);
-        }
-        $lines[] = '';
-        $lines[] = 'Add these lines to the crontab of the account that owns the site (crontab -e, or cPanel > Cron Jobs):';
-        $lines = array_merge($lines, $cron);
-        $lines[] = '';
-        $lines[] = 'Next, confirm alerts arrive: ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' test-alert --config=' . escapeshellarg($configFile);
-        $lines[] = 'Recommended: set heartbeat_url in the config to a healthchecks.io-style URL so you are told if Sentinel stops running.';
-        $lines[] = 'Run doctor for hosting checks and scan history. Cron keeps stderr visible; configure cron email or capture/rotate it in a private log.';
-        return ['exit' => 0, 'lines' => $lines];
+        return true;
     }
 
     /** @return array<string,string> */
-    public static function selfFiles(string $script, string $configFile, State $state): array
+    public static function selfFiles(string $script, string $configFile, State $state, string $settingsFile = ''): array
     {
         $s = realpath($script);
         $c = realpath($configFile);
@@ -162,7 +189,7 @@ final class Init
             'config' => $c !== false ? $c : $configFile,
             'rules' => $state->path('rules.json'),
             'dismissals' => $state->path(Dismissals::FILE),
-        ];
+        ] + ($settingsFile !== '' ? ['settings' => $settingsFile] : []);
     }
 
     private static function flush(Analyzer $analyzer, array &$batch, array &$findings, array &$notes): void

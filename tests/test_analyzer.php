@@ -197,7 +197,7 @@ t('Analyzer: initial mode keeps only Critical findings and holds nothing', funct
     [$root, $c, $b] = wpFixture();
     $old = VersionTracker::read($c);
     putFile($root, 'wp-content/plugins/bar/bar.php', "<?php\n/*\nPlugin Name: Bar\nVersion: 2.0\n*/\n");
-    putFile($root, 'wp-content/uploads/x.php', '<?php');
+    putFile($root, 'wp-content/uploads/x.php', '<?php echo 1;');
     $r = runAnalysis($c, $b, null, $old, true);
     assertSame(['php-in-uploads@wp-content/uploads/x.php'], ruleList($r));
     assertSame([], $r['hold']);
@@ -309,7 +309,7 @@ t('Analyzer: files that just arrived are given a grace period before update-expl
 t('Analyzer: the grace period never delays scanner hits or sensitive changes', function () {
     [$root, $c, $b] = wpFixture([], ['update_grace_seconds' => 120]);
     putFile($root, 'lib/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
-    putFile($root, 'wp-content/uploads/x.php', '<?php');
+    putFile($root, 'wp-content/uploads/x.php', '<?php echo 1;');
     bump($root, 'wp-config.php', '<?php // edited by someone', 0);
     $r = runAnalysis($c, $b, null, VersionTracker::read($c), false, false, time());
     assertSame(['php-in-uploads@wp-content/uploads/x.php', 'sensitive-file-changed@wp-config.php', 'test-marker@lib/evil.php'], ruleList($r));

@@ -36,6 +36,26 @@ final class Finding
         return substr($this->key(), 0, 12);
     }
 
+    /**
+     * Text as it may be shown in an alert or output line: control characters and Unicode
+     * direction overrides are written as %XX, so a file name cannot add lines to an alert
+     * ("...please ignore this email") or disguise its own extension.
+     */
+    public static function shown(string $text): string
+    {
+        return (string)preg_replace_callback('/[\x00-\x09\x0B-\x1F\x7F]|\xE2\x80[\xAA-\xAE]|\xE2\x81[\xA6-\xA9]/', function ($m) {
+            return strtoupper(implode('', array_map(function ($b) {
+                return '%' . bin2hex($b);
+            }, str_split($m[0]))));
+        }, $text);
+    }
+
+    /** One line of output: like shown(), and a newline is escaped too. */
+    public static function line(string $text): string
+    {
+        return str_replace("\n", '%0A', self::shown($text));
+    }
+
     public static function label(int $severity): string
     {
         if ($severity >= self::CRITICAL) {

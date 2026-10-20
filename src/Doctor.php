@@ -14,7 +14,7 @@ final class Doctor
             $lines[] = ['OK', 'WARN', 'ERROR'][$level] . ': ' . $message;
             $exit = max($exit, $level);
         };
-        $add(0, 'PHP ' . PHP_VERSION . ' CLI: ' . PHP_BINARY);
+        $add(0, 'PHP ' . PHP_VERSION . ' (' . PHP_SAPI . '): ' . PHP_BINARY);
         $add(is_readable($c->siteRoot) ? 0 : 2, 'site root: ' . $c->siteRoot);
         $add(is_dir($c->stateDir) && is_writable($c->stateDir) ? 0 : 2, 'writable state directory: ' . $c->stateDir);
         foreach (['script' => $script, 'configuration' => $configFile, 'state directory' => $c->stateDir] as $label => $path) {

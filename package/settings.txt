@@ -1,0 +1,26 @@
+# Site Sentinel settings
+# Edit the lines below and save. Lines starting with # are explanations and are ignored.
+
+# 1. Who receives security alerts? One address per line; add more "email =" lines for more people.
+email = you@example.com
+
+# 2. The website's name, as it should appear in alerts.
+website = My website
+
+# 3. Who people should contact when an alert arrives. Shown in every alert.
+contact = Bro Media (info@bromedia.co.za)
+
+# 4. Updates to bought plugins and themes (for example Avada or Divi): yes or no
+#    yes: accepted automatically. Fewer emails, but a hacker who changes those files and also
+#         raises their version number would not be reported. (Malware patterns, changed
+#         WordPress files and PHP hidden in uploads are still reported either way.)
+#    no:  every such update sends an email, and keeps being reported until your web
+#         developer has checked and approved it.
+approve_plugin_updates_automatically = yes
+
+# For your web developer (recommended): a heartbeat address, pinged after every run, so a
+# service such as healthchecks.io warns when Site Sentinel stops running.
+# heartbeat = https://hc-ping.com/your-check-id
+
+# Optional: the address alerts are sent from. Use one on your own domain if alerts land in spam.
+# from = alerts@your-domain.co.za
