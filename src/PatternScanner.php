@@ -26,7 +26,7 @@ final class PatternScanner
             return $out;
         }
         $failed = [];
-        foreach ($this->rules->matchContent($content, $failed) as $p) {
+        foreach ($this->rules->matchContent($content, $failed, strtolower(pathinfo($rel, PATHINFO_EXTENSION))) as $p) {
             $sev = $p['severity'] === 'critical' ? Finding::CRITICAL : Finding::WARNING;
             $out[] = new Finding($sev, $rel, $p['id'], $p['description'], $sha256);
         }

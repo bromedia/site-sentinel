@@ -107,7 +107,7 @@ See `examples/sentinel.json`. To watch a server's `/tmp`, use a second config wi
 ## Limits you should know about
 
 - On shared hosting an attacker who controls the account can also edit Sentinel, its config and its baseline. Sentinel watches its own files and raises Critical if they change, but that is a tripwire, not a defence. The heartbeat is what tells you the monitor itself was disabled, and alerts leave the server immediately.
-- Detection is rule-based: it catches common webshells and anything that violates the file-integrity rules, not novel malware. File changes that should never happen are the more reliable signal.
+- Detection is rule-based: about 50 built-in signatures for common WordPress malware (see [docs/RULES.md](docs/RULES.md)) plus the file-integrity rules. Novel malware can evade the signatures; file changes that should never happen are the more reliable signal.
 - Email from shared hosts is often filtered. Add a second channel (ntfy or Telegram) at least for Critical alerts.
 - Symlinks are never followed, so a symlinked directory (for example `wp-content/uploads` pointing elsewhere, common with deploy tools) is not monitored. `init` lists the ones it finds; give each target its own config with `site_root` set to the target.
 - `wp-config.php` kept one directory above the site root is outside the watched tree.

@@ -1,0 +1,406 @@
+{
+    "version": 2026102001,
+    "patterns": [
+        {
+            "id": "eval-request",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:eval|assert)\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*\\w+\\s*\\)\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*(?:@\\s*)?){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\))~i",
+            "description": "Runs code taken from the web request (remote code execution backdoor)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "exec-request",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:system|shell_exec|passthru|exec|popen|proc_open|pcntl_exec)\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*\\w+\\s*\\)\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*(?:@\\s*)?){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\))~i",
+            "description": "Runs a server command taken from the web request (command execution backdoor)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "request-callable",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\$_(?:GET|POST|REQUEST|COOKIE)\\s*\\[[^\\]]{1,64}\\]\\s*\\(~i",
+            "description": "Calls a function whose name comes from the web request",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "callback-request",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:call_user_func(?:_array)?|array_map|register_shutdown_function|register_tick_function|ob_start|forward_static_call(?:_array)?|iterator_apply)\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*\\w+\\s*\\)\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*(?:@\\s*)?){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\))~i",
+            "description": "Uses request data as a callback, so the request chooses what code runs",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "create-function-request",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])create_function\\s*\\([^;]{0,200}?(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\))~i",
+            "description": "Builds a function from web request data",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "preg-pattern-request",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])preg_replace(?:_callback)?\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*\\w+\\s*\\)\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*(?:@\\s*)?){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\))~i",
+            "description": "Regular expression taken from the web request (code execution on old PHP)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "include-request",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\b(?:include|require)(?:_once)?\\s*\\(?\\s*(?:[a-z_]\\w*\\s*\\(\\s*){0,2}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\))~i",
+            "description": "Loads a file chosen by the web request",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "write-file-request",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])file_put_contents\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*\\w+\\s*\\)\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*(?:@\\s*)?){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\))~i",
+            "description": "Writes to a file path taken from the web request",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "upload-as-requested-name",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])move_uploaded_file\\s*\\(\\s*\\$_FILES\\s*\\[[^\\]]{1,40}\\]\\s*\\[\\s*['\"]tmp_name['\"]\\s*\\]\\s*,\\s*(?:\\$_FILES\\s*\\[[^\\]]{1,40}\\]\\s*\\[\\s*['\"]name['\"]\\s*\\]|(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_|['\"]php://input|getallheaders\\s*\\(\\s*\\)))~i",
+            "description": "Saves an uploaded file under the name the uploader chose (file upload backdoor)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "eval-request-variable",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\$(\\w{1,30})\\s*=\\s*(?:@\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|['\"]php://input)[^;]{0,120};\\s*(?:@\\s*)?(?:eval|assert|system|passthru|shell_exec|popen)\\s*\\(\\s*(?:[a-z_]\\w*\\s*\\(\\s*){0,2}\\$\\1\\b~i",
+            "description": "Stores web request data and runs it on the next line",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "remote-code",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\b(?:eval|assert)\\s*\\(\\s*(?:@\\s*)?file_get_contents\\s*\\(\\s*['\"]https?://|\\b(?:include|require)(?:_once)?\\s*\\(?\\s*['\"]https?://~i",
+            "description": "Runs code downloaded from another website",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "shell-download",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:system|exec|shell_exec|passthru|popen)\\s*\\(\\s*['\"](?:wget|curl|lynx|fetch)\\s~i",
+            "description": "Downloads files with a server command",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "eval-decoder",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:eval|assert)\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*)?(?:base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|convert_uudecode|hex2bin|strrev|rawurldecode|urldecode|pack)\\s*\\(~i",
+            "description": "Runs code that was hidden by encoding",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "eval-decoded-variable",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\$(\\w{1,30})\\s*=\\s*(?:@\\s*)?(?:base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|hex2bin|convert_uudecode)\\s*\\([^;]{0,400}\\);\\s*(?:@\\s*)?(?:eval|assert)\\s*\\(\\s*\\$\\1\\b~i",
+            "description": "Decodes hidden code and runs it on the next line",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "eval-closing-tag",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\beval\\s*\\(\\s*(['\"])\\?>\\1\\s*\\.~i",
+            "description": "Runs a decoded PHP payload (eval of a closing tag plus data)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "escaped-function-name",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~([\"'])(?=[^\"']{0,80}\\\\)(?:(?:a|\\\\x61|\\\\141)(?:s|\\\\x73|\\\\163)(?:s|\\\\x73|\\\\163)(?:e|\\\\x65|\\\\145)(?:r|\\\\x72|\\\\162)(?:t|\\\\x74|\\\\164)|(?:s|\\\\x73|\\\\163)(?:y|\\\\x79|\\\\171)(?:s|\\\\x73|\\\\163)(?:t|\\\\x74|\\\\164)(?:e|\\\\x65|\\\\145)(?:m|\\\\x6d|\\\\155)|(?:p|\\\\x70|\\\\160)(?:a|\\\\x61|\\\\141)(?:s|\\\\x73|\\\\163)(?:s|\\\\x73|\\\\163)(?:t|\\\\x74|\\\\164)(?:h|\\\\x68|\\\\150)(?:r|\\\\x72|\\\\162)(?:u|\\\\x75|\\\\165)|(?:s|\\\\x73|\\\\163)(?:h|\\\\x68|\\\\150)(?:e|\\\\x65|\\\\145)(?:l|\\\\x6c|\\\\154)(?:l|\\\\x6c|\\\\154)(?:_|\\\\x5f|\\\\137)(?:e|\\\\x65|\\\\145)(?:x|\\\\x78|\\\\170)(?:e|\\\\x65|\\\\145)(?:c|\\\\x63|\\\\143)|(?:p|\\\\x70|\\\\160)(?:o|\\\\x6f|\\\\157)(?:p|\\\\x70|\\\\160)(?:e|\\\\x65|\\\\145)(?:n|\\\\x6e|\\\\156)|(?:p|\\\\x70|\\\\160)(?:r|\\\\x72|\\\\162)(?:o|\\\\x6f|\\\\157)(?:c|\\\\x63|\\\\143)(?:_|\\\\x5f|\\\\137)(?:o|\\\\x6f|\\\\157)(?:p|\\\\x70|\\\\160)(?:e|\\\\x65|\\\\145)(?:n|\\\\x6e|\\\\156)|(?:b|\\\\x62|\\\\142)(?:a|\\\\x61|\\\\141)(?:s|\\\\x73|\\\\163)(?:e|\\\\x65|\\\\145)(?:6|\\\\x36|\\\\066)(?:4|\\\\x34|\\\\064)(?:_|\\\\x5f|\\\\137)(?:d|\\\\x64|\\\\144)(?:e|\\\\x65|\\\\145)(?:c|\\\\x63|\\\\143)(?:o|\\\\x6f|\\\\157)(?:d|\\\\x64|\\\\144)(?:e|\\\\x65|\\\\145)|(?:g|\\\\x67|\\\\147)(?:z|\\\\x7a|\\\\172)(?:i|\\\\x69|\\\\151)(?:n|\\\\x6e|\\\\156)(?:f|\\\\x66|\\\\146)(?:l|\\\\x6c|\\\\154)(?:a|\\\\x61|\\\\141)(?:t|\\\\x74|\\\\164)(?:e|\\\\x65|\\\\145)|(?:g|\\\\x67|\\\\147)(?:z|\\\\x7a|\\\\172)(?:u|\\\\x75|\\\\165)(?:n|\\\\x6e|\\\\156)(?:c|\\\\x63|\\\\143)(?:o|\\\\x6f|\\\\157)(?:m|\\\\x6d|\\\\155)(?:p|\\\\x70|\\\\160)(?:r|\\\\x72|\\\\162)(?:e|\\\\x65|\\\\145)(?:s|\\\\x73|\\\\163)(?:s|\\\\x73|\\\\163)|(?:s|\\\\x73|\\\\163)(?:t|\\\\x74|\\\\164)(?:r|\\\\x72|\\\\162)(?:_|\\\\x5f|\\\\137)(?:r|\\\\x72|\\\\162)(?:o|\\\\x6f|\\\\157)(?:t|\\\\x74|\\\\164)(?:1|\\\\x31|\\\\061)(?:3|\\\\x33|\\\\063)|(?:c|\\\\x63|\\\\143)(?:r|\\\\x72|\\\\162)(?:e|\\\\x65|\\\\145)(?:a|\\\\x61|\\\\141)(?:t|\\\\x74|\\\\164)(?:e|\\\\x65|\\\\145)(?:_|\\\\x5f|\\\\137)(?:f|\\\\x66|\\\\146)(?:u|\\\\x75|\\\\165)(?:n|\\\\x6e|\\\\156)(?:c|\\\\x63|\\\\143)(?:t|\\\\x74|\\\\164)(?:i|\\\\x69|\\\\151)(?:o|\\\\x6f|\\\\157)(?:n|\\\\x6e|\\\\156)|(?:c|\\\\x63|\\\\143)(?:a|\\\\x61|\\\\141)(?:l|\\\\x6c|\\\\154)(?:l|\\\\x6c|\\\\154)(?:_|\\\\x5f|\\\\137)(?:u|\\\\x75|\\\\165)(?:s|\\\\x73|\\\\163)(?:e|\\\\x65|\\\\145)(?:r|\\\\x72|\\\\162)(?:_|\\\\x5f|\\\\137)(?:f|\\\\x66|\\\\146)(?:u|\\\\x75|\\\\165)(?:n|\\\\x6e|\\\\156)(?:c|\\\\x63|\\\\143)|(?:p|\\\\x70|\\\\160)(?:r|\\\\x72|\\\\162)(?:e|\\\\x65|\\\\145)(?:g|\\\\x67|\\\\147)(?:_|\\\\x5f|\\\\137)(?:r|\\\\x72|\\\\162)(?:e|\\\\x65|\\\\145)(?:p|\\\\x70|\\\\160)(?:l|\\\\x6c|\\\\154)(?:a|\\\\x61|\\\\141)(?:c|\\\\x63|\\\\143)(?:e|\\\\x65|\\\\145)|(?:G|\\\\x47|\\\\107)(?:L|\\\\x4c|\\\\114)(?:O|\\\\x4f|\\\\117)(?:B|\\\\x42|\\\\102)(?:A|\\\\x41|\\\\101)(?:L|\\\\x4c|\\\\114)(?:S|\\\\x53|\\\\123)|(?:f|\\\\x66|\\\\146)(?:i|\\\\x69|\\\\151)(?:l|\\\\x6c|\\\\154)(?:e|\\\\x65|\\\\145)(?:_|\\\\x5f|\\\\137)(?:p|\\\\x70|\\\\160)(?:u|\\\\x75|\\\\165)(?:t|\\\\x74|\\\\164)(?:_|\\\\x5f|\\\\137)(?:c|\\\\x63|\\\\143)(?:o|\\\\x6f|\\\\157)(?:n|\\\\x6e|\\\\156)(?:t|\\\\x74|\\\\164)(?:e|\\\\x65|\\\\145)(?:n|\\\\x6e|\\\\156)(?:t|\\\\x74|\\\\164)(?:s|\\\\x73|\\\\163)|(?:m|\\\\x6d|\\\\155)(?:o|\\\\x6f|\\\\157)(?:v|\\\\x76|\\\\166)(?:e|\\\\x65|\\\\145)(?:_|\\\\x5f|\\\\137)(?:u|\\\\x75|\\\\165)(?:p|\\\\x70|\\\\160)(?:l|\\\\x6c|\\\\154)(?:o|\\\\x6f|\\\\157)(?:a|\\\\x61|\\\\141)(?:d|\\\\x64|\\\\144)(?:e|\\\\x65|\\\\145)(?:d|\\\\x64|\\\\144)(?:_|\\\\x5f|\\\\137)(?:f|\\\\x66|\\\\146)(?:i|\\\\x69|\\\\151)(?:l|\\\\x6c|\\\\154)(?:e|\\\\x65|\\\\145))\\1~i",
+            "description": "Names a dangerous function with escape codes to hide it",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "reversed-function-name",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\bstrrev\\s*\\(\\s*(['\"])(?:edoced_46esab|etalfnizg|sserpmocnuzg|tressa|metsys|cexe_llehs|urhtssap|nepop|nepo_corp|noitcnuf_etaerc|31tor_rts|stnetnoc_tup_elif|elif_dedaolpu_evom)\\1~i",
+            "description": "Builds a dangerous function name by reversing a string",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "rot13-function-name",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\bstr_rot13\\s*\\(\\s*(['\"])(?:onfr64_qrpbqr|tmvasyngr|nffreg|flfgrz|furyy_rkrp|cnffgueh|perngr_shapgvba|cbcra)\\1~i",
+            "description": "Builds a dangerous function name with ROT13",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "split-exec-name",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?:(['\"])s\\1\\s*\\.\\s*(['\"])ystem\\2)|(?:(['\"])sy\\3\\s*\\.\\s*(['\"])stem\\4)|(?:(['\"])sys\\5\\s*\\.\\s*(['\"])tem\\6)|(?:(['\"])syst\\7\\s*\\.\\s*(['\"])em\\8)|(?:(['\"])syste\\9\\s*\\.\\s*(['\"])m\\10)|(?:(['\"])a\\11\\s*\\.\\s*(['\"])ssert\\12)|(?:(['\"])as\\13\\s*\\.\\s*(['\"])sert\\14)|(?:(['\"])ass\\15\\s*\\.\\s*(['\"])ert\\16)|(?:(['\"])asse\\17\\s*\\.\\s*(['\"])rt\\18)|(?:(['\"])asser\\19\\s*\\.\\s*(['\"])t\\20)|(?:(['\"])p\\21\\s*\\.\\s*(['\"])assthru\\22)|(?:(['\"])pa\\23\\s*\\.\\s*(['\"])ssthru\\24)|(?:(['\"])pas\\25\\s*\\.\\s*(['\"])sthru\\26)|(?:(['\"])pass\\27\\s*\\.\\s*(['\"])thru\\28)|(?:(['\"])passt\\29\\s*\\.\\s*(['\"])hru\\30)|(?:(['\"])passth\\31\\s*\\.\\s*(['\"])ru\\32)|(?:(['\"])passthr\\33\\s*\\.\\s*(['\"])u\\34)|(?:(['\"])s\\35\\s*\\.\\s*(['\"])hell_exec\\36)|(?:(['\"])sh\\37\\s*\\.\\s*(['\"])ell_exec\\38)|(?:(['\"])she\\39\\s*\\.\\s*(['\"])ll_exec\\40)|(?:(['\"])shel\\41\\s*\\.\\s*(['\"])l_exec\\42)|(?:(['\"])shell\\43\\s*\\.\\s*(['\"])_exec\\44)|(?:(['\"])shell_\\45\\s*\\.\\s*(['\"])exec\\46)|(?:(['\"])shell_e\\47\\s*\\.\\s*(['\"])xec\\48)|(?:(['\"])shell_ex\\49\\s*\\.\\s*(['\"])ec\\50)|(?:(['\"])shell_exe\\51\\s*\\.\\s*(['\"])c\\52)|(?:(['\"])p\\53\\s*\\.\\s*(['\"])open\\54)|(?:(['\"])po\\55\\s*\\.\\s*(['\"])pen\\56)|(?:(['\"])pop\\57\\s*\\.\\s*(['\"])en\\58)|(?:(['\"])pope\\59\\s*\\.\\s*(['\"])n\\60)|(?:(['\"])p\\61\\s*\\.\\s*(['\"])roc_open\\62)|(?:(['\"])pr\\63\\s*\\.\\s*(['\"])oc_open\\64)|(?:(['\"])pro\\65\\s*\\.\\s*(['\"])c_open\\66)|(?:(['\"])proc\\67\\s*\\.\\s*(['\"])_open\\68)|(?:(['\"])proc_\\69\\s*\\.\\s*(['\"])open\\70)|(?:(['\"])proc_o\\71\\s*\\.\\s*(['\"])pen\\72)|(?:(['\"])proc_op\\73\\s*\\.\\s*(['\"])en\\74)|(?:(['\"])proc_ope\\75\\s*\\.\\s*(['\"])n\\76)|(?:(['\"])p\\77\\s*\\.\\s*(['\"])cntl_exec\\78)|(?:(['\"])pc\\79\\s*\\.\\s*(['\"])ntl_exec\\80)|(?:(['\"])pcn\\81\\s*\\.\\s*(['\"])tl_exec\\82)|(?:(['\"])pcnt\\83\\s*\\.\\s*(['\"])l_exec\\84)|(?:(['\"])pcntl\\85\\s*\\.\\s*(['\"])_exec\\86)|(?:(['\"])pcntl_\\87\\s*\\.\\s*(['\"])exec\\88)|(?:(['\"])pcntl_e\\89\\s*\\.\\s*(['\"])xec\\90)|(?:(['\"])pcntl_ex\\91\\s*\\.\\s*(['\"])ec\\92)|(?:(['\"])pcntl_exe\\93\\s*\\.\\s*(['\"])c\\94)|(?:(['\"])c\\95\\s*\\.\\s*(['\"])reate_function\\96)|(?:(['\"])cr\\97\\s*\\.\\s*(['\"])eate_function\\98)|(?:(['\"])cre\\99\\s*\\.\\s*(['\"])ate_function\\100)|(?:(['\"])crea\\101\\s*\\.\\s*(['\"])te_function\\102)|(?:(['\"])creat\\103\\s*\\.\\s*(['\"])e_function\\104)|(?:(['\"])create\\105\\s*\\.\\s*(['\"])_function\\106)|(?:(['\"])create_\\107\\s*\\.\\s*(['\"])function\\108)|(?:(['\"])create_f\\109\\s*\\.\\s*(['\"])unction\\110)|(?:(['\"])create_fu\\111\\s*\\.\\s*(['\"])nction\\112)|(?:(['\"])create_fun\\113\\s*\\.\\s*(['\"])ction\\114)|(?:(['\"])create_func\\115\\s*\\.\\s*(['\"])tion\\116)|(?:(['\"])create_funct\\117\\s*\\.\\s*(['\"])ion\\118)|(?:(['\"])create_functi\\119\\s*\\.\\s*(['\"])on\\120)|(?:(['\"])create_functio\\121\\s*\\.\\s*(['\"])n\\122)|(?:(['\"])m\\123\\s*\\.\\s*(['\"])ove_uploaded_file\\124)|(?:(['\"])mo\\125\\s*\\.\\s*(['\"])ve_uploaded_file\\126)|(?:(['\"])mov\\127\\s*\\.\\s*(['\"])e_uploaded_file\\128)|(?:(['\"])move\\129\\s*\\.\\s*(['\"])_uploaded_file\\130)|(?:(['\"])move_\\131\\s*\\.\\s*(['\"])uploaded_file\\132)|(?:(['\"])move_u\\133\\s*\\.\\s*(['\"])ploaded_file\\134)|(?:(['\"])move_up\\135\\s*\\.\\s*(['\"])loaded_file\\136)|(?:(['\"])move_upl\\137\\s*\\.\\s*(['\"])oaded_file\\138)|(?:(['\"])move_uplo\\139\\s*\\.\\s*(['\"])aded_file\\140)|(?:(['\"])move_uploa\\141\\s*\\.\\s*(['\"])ded_file\\142)|(?:(['\"])move_upload\\143\\s*\\.\\s*(['\"])ed_file\\144)|(?:(['\"])move_uploade\\145\\s*\\.\\s*(['\"])d_file\\146)|(?:(['\"])move_uploaded\\147\\s*\\.\\s*(['\"])_file\\148)|(?:(['\"])move_uploaded_\\149\\s*\\.\\s*(['\"])file\\150)|(?:(['\"])move_uploaded_f\\151\\s*\\.\\s*(['\"])ile\\152)|(?:(['\"])move_uploaded_fi\\153\\s*\\.\\s*(['\"])le\\154)|(?:(['\"])move_uploaded_fil\\155\\s*\\.\\s*(['\"])e\\156)~i",
+            "description": "Builds a code or command execution function name from pieces to hide it",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "split-decoder-name",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?:(['\"])b\\1\\s*\\.\\s*(['\"])ase64_decode\\2)|(?:(['\"])ba\\3\\s*\\.\\s*(['\"])se64_decode\\4)|(?:(['\"])bas\\5\\s*\\.\\s*(['\"])e64_decode\\6)|(?:(['\"])base\\7\\s*\\.\\s*(['\"])64_decode\\8)|(?:(['\"])base6\\9\\s*\\.\\s*(['\"])4_decode\\10)|(?:(['\"])base64\\11\\s*\\.\\s*(['\"])_decode\\12)|(?:(['\"])base64_\\13\\s*\\.\\s*(['\"])decode\\14)|(?:(['\"])base64_d\\15\\s*\\.\\s*(['\"])ecode\\16)|(?:(['\"])base64_de\\17\\s*\\.\\s*(['\"])code\\18)|(?:(['\"])base64_dec\\19\\s*\\.\\s*(['\"])ode\\20)|(?:(['\"])base64_deco\\21\\s*\\.\\s*(['\"])de\\22)|(?:(['\"])base64_decod\\23\\s*\\.\\s*(['\"])e\\24)|(?:(['\"])g\\25\\s*\\.\\s*(['\"])zinflate\\26)|(?:(['\"])gz\\27\\s*\\.\\s*(['\"])inflate\\28)|(?:(['\"])gzi\\29\\s*\\.\\s*(['\"])nflate\\30)|(?:(['\"])gzin\\31\\s*\\.\\s*(['\"])flate\\32)|(?:(['\"])gzinf\\33\\s*\\.\\s*(['\"])late\\34)|(?:(['\"])gzinfl\\35\\s*\\.\\s*(['\"])ate\\36)|(?:(['\"])gzinfla\\37\\s*\\.\\s*(['\"])te\\38)|(?:(['\"])gzinflat\\39\\s*\\.\\s*(['\"])e\\40)|(?:(['\"])g\\41\\s*\\.\\s*(['\"])zuncompress\\42)|(?:(['\"])gz\\43\\s*\\.\\s*(['\"])uncompress\\44)|(?:(['\"])gzu\\45\\s*\\.\\s*(['\"])ncompress\\46)|(?:(['\"])gzun\\47\\s*\\.\\s*(['\"])compress\\48)|(?:(['\"])gzunc\\49\\s*\\.\\s*(['\"])ompress\\50)|(?:(['\"])gzunco\\51\\s*\\.\\s*(['\"])mpress\\52)|(?:(['\"])gzuncom\\53\\s*\\.\\s*(['\"])press\\54)|(?:(['\"])gzuncomp\\55\\s*\\.\\s*(['\"])ress\\56)|(?:(['\"])gzuncompr\\57\\s*\\.\\s*(['\"])ess\\58)|(?:(['\"])gzuncompre\\59\\s*\\.\\s*(['\"])ss\\60)|(?:(['\"])gzuncompres\\61\\s*\\.\\s*(['\"])s\\62)|(?:(['\"])s\\63\\s*\\.\\s*(['\"])tr_rot13\\64)|(?:(['\"])st\\65\\s*\\.\\s*(['\"])r_rot13\\66)|(?:(['\"])str\\67\\s*\\.\\s*(['\"])_rot13\\68)|(?:(['\"])str_\\69\\s*\\.\\s*(['\"])rot13\\70)|(?:(['\"])str_r\\71\\s*\\.\\s*(['\"])ot13\\72)|(?:(['\"])str_ro\\73\\s*\\.\\s*(['\"])t13\\74)|(?:(['\"])str_rot\\75\\s*\\.\\s*(['\"])13\\76)|(?:(['\"])str_rot1\\77\\s*\\.\\s*(['\"])3\\78)|(?:(['\"])c\\79\\s*\\.\\s*(['\"])onvert_uudecode\\80)|(?:(['\"])co\\81\\s*\\.\\s*(['\"])nvert_uudecode\\82)|(?:(['\"])con\\83\\s*\\.\\s*(['\"])vert_uudecode\\84)|(?:(['\"])conv\\85\\s*\\.\\s*(['\"])ert_uudecode\\86)|(?:(['\"])conve\\87\\s*\\.\\s*(['\"])rt_uudecode\\88)|(?:(['\"])conver\\89\\s*\\.\\s*(['\"])t_uudecode\\90)|(?:(['\"])convert\\91\\s*\\.\\s*(['\"])_uudecode\\92)|(?:(['\"])convert_\\93\\s*\\.\\s*(['\"])uudecode\\94)|(?:(['\"])convert_u\\95\\s*\\.\\s*(['\"])udecode\\96)|(?:(['\"])convert_uu\\97\\s*\\.\\s*(['\"])decode\\98)|(?:(['\"])convert_uud\\99\\s*\\.\\s*(['\"])ecode\\100)|(?:(['\"])convert_uude\\101\\s*\\.\\s*(['\"])code\\102)|(?:(['\"])convert_uudec\\103\\s*\\.\\s*(['\"])ode\\104)|(?:(['\"])convert_uudeco\\105\\s*\\.\\s*(['\"])de\\106)|(?:(['\"])convert_uudecod\\107\\s*\\.\\s*(['\"])e\\108)~i",
+            "description": "Builds a decoding function name from pieces (often used to hide payloads)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "obfuscator-variables",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\$(?=[O0_]*0)(?=[O0_]*O)[O0_]{6,}\\b~i",
+            "description": "Variable names made only of O and 0 (a common malware obfuscator)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "globals-function-table",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\$GLOBALS\\s*\\[\\s*(['\"])\\w{1,20}\\1\\s*\\]\\s*\\[\\s*\\d+\\s*\\]\\s*\\(~i",
+            "description": "Calls functions through an index into a hidden name table",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "encoded-payload",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:gzinflate|gzuncompress|gzdecode|str_rot13|strrev)\\s*\\(\\s*base64_decode\\s*\\(\\s*(['\"])[A-Za-z0-9+/=\\s]{500,}\\1~i",
+            "description": "Large encoded and compressed payload",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "chr-chain",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?:chr\\s*\\(\\s*(?:3[2-9]|[4-9]\\d|1[01]\\d|12[0-6])\\s*\\)\\s*\\.\\s*){8,}~i",
+            "description": "String assembled from chr() calls (obfuscation)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "eval-variable-chain",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:eval|assert)\\s*\\(\\s*\\$\\w+\\s*\\(\\s*\\$\\w+\\s*\\(~i",
+            "description": "Runs the result of nested variable function calls (obfuscation)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "preg-replace-eval",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])preg_replace\\s*\\(\\s*(['\"])([^\\w\\s\\\\])[^'\"]{0,200}\\2[imsxuADSUXJ]{0,8}e[imsxuADSUXJ]{0,8}\\1~i",
+            "description": "Regular expression with the removed /e (execute) modifier",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "include-image",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\b(?:include|require)(?:_once)?\\s*\\(?\\s*(['\"])[^'\"]{0,200}\\.(?:ico|png|jpe?g|gif|bmp|webp)\\1~i",
+            "description": "Runs an image file as PHP (hidden backdoor)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "include-escaped-path",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~\\b(?:include|require)(?:_once)?\\s*\\(?\\s*\"(?:\\\\x[0-9a-f]{2}|\\\\[0-7]{3}){4}~i",
+            "description": "Loads a file whose path is hidden with escape codes",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "hardcoded-user",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])wp_create_user\\s*\\(\\s*(['\"])[^'\"]{2,60}\\1\\s*,\\s*(['\"])[^'\"]{4,100}\\2~i",
+            "description": "Creates a WordPress user with a password written into the code (backdoor account)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "hardcoded-user-password",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])wp_insert_user\\s*\\([^;]{0,400}?['\"]user_pass['\"]\\s*=>\\s*(['\"])[^'\"$]{4,100}\\1~i",
+            "description": "Creates a WordPress user with a password written into the code (backdoor account)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "hidden-admin",
+            "severity": "critical",
+            "files": "php",
+            "regex": "~WHERE\\s+1\\s*=\\s*1\\s+AND\\s+\\{?\\$wpdb->users\\}?\\.(?:user_login|ID)\\s*!=~i",
+            "description": "Hides a user from the WordPress user list",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "hidden-plugin",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~unset\\s*\\(\\s*\\$\\w{1,30}\\s*\\[\\s*plugin_basename\\s*\\(\\s*__FILE__\\s*\\)\\s*\\]~i",
+            "description": "A plugin that hides itself from the plugin list",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "fake-theme-modules",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~wp\\-[v]cd|WP_[V]_CD|class\\.theme-mod[u]les\\.php~i",
+            "description": "Known WordPress malware family (fake theme modules)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "webshell-family",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~File[s]Man|\\bws[o]Ex\\s*\\(|\\bwsoL[o]gin\\b|\\bWSOset[c]ookie\\b|\\bwsoH[e]ader\\b|c99s[h]ell|c99_buff[_]prepare|r57s[h]ell|\\bb3[7]4k\\b|IndoX[p]loit~i",
+            "description": "Known webshell (file manager backdoor)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "reverse-shell",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~/dev/t[c]p/|\\bbash\\s+-i\\s*>&|\\bnc\\s+-e\\s+/bin/(?:ba)?sh\\b|\\bsh\\s+-i\\s+[0-9]?>&~i",
+            "description": "Reverse shell (gives an attacker a remote command line)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "cryptominer",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~coin[h]ive|Coin[H]ive\\.Anonymous|crypt[o]night|webmi[n]epool|crypt[o]\\-loot|coi[n]imp\\.com~i",
+            "description": "Cryptocurrency miner",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "js-eval-charcodes",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~\\beval\\s*\\(\\s*String\\.fromCharCode\\s*\\(~i",
+            "description": "Runs JavaScript hidden as character codes",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "js-unescape-script",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~document\\.write\\s*\\(\\s*unescape\\s*\\(\\s*(['\"])%3[cC]%73%63~i",
+            "description": "Writes a hidden script tag into the page",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "js-encoded-script-loader",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~atob\\s*\\(\\s*(['\"])aHR0c[A-Za-z0-9+/=]{6,}\\1[\\s\\S]{0,300}?createElement\\s*\\(\\s*(['\"])script\\2|createElement\\s*\\(\\s*(['\"])script\\3[\\s\\S]{0,300}?atob\\s*\\(\\s*(['\"])aHR0c~i",
+            "description": "Loads a script from an address hidden with base64",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "js-long-charcodes",
+            "severity": "warning",
+            "files": "any",
+            "regex": "~String\\.fromCharCode\\s*\\(\\s*(?:\\d{2,3}\\s*,\\s*){40,}~i",
+            "description": "Long run of character codes (hidden text or script)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "script-from-ip",
+            "severity": "warning",
+            "files": "any",
+            "regex": "~<script[^>]{0,80}src\\s*=\\s*\\\\?['\"]https?://\\d{1,3}(?:\\.\\d{1,3}){3}[:/]~i",
+            "description": "Loads a script from a bare IP address",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "gambling-spam",
+            "severity": "warning",
+            "files": "any",
+            "regex": "~\\b(?:slot\\s*ga[c]or|ju[d]i\\s*(?:slot|online|bola)|situs\\s*slot|togel\\s*online|sbo[b]et|slot\\s*thailand|bandar\\s*(?:togel|judi))\\b~i",
+            "description": "Gambling spam text (common in hacked sites)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "hidden-pharma-spam",
+            "severity": "warning",
+            "files": "any",
+            "regex": "~(?:via[g]ra|cia[l]is|lev[i]tra)[^<]{0,200}<[^>]{0,200}display\\s*:\\s*none|display\\s*:\\s*none[^>]{0,200}>[^<]{0,200}(?:via[g]ra|cia[l]is|lev[i]tra)~i",
+            "description": "Hidden pharmacy spam text",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "mailer-request",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])mail\\s*\\(\\s*\\$_(?:GET|POST|REQUEST)\\b~i",
+            "description": "Sends email to an address taken straight from the web request (spam relay)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "file-op-request",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:unlink|rmdir|rename|chmod|copy|readfile|scandir|fopen|touch)\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*\\w+\\s*\\)\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*(?:@\\s*)?){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_)~i",
+            "description": "File operation on a path taken straight from the web request",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "connect-request",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])(?:fsockopen|pfsockopen|stream_socket_client|curl_init|file_get_contents)\\s*\\(\\s*(?:@\\s*)?(?:\\(\\s*\\w+\\s*\\)\\s*)?(?:[a-z_]\\w*\\s*\\(\\s*(?:@\\s*)?){0,3}(?:\\$_(?:GET|POST|REQUEST|COOKIE)\\b|\\$_SERVER\\s*\\[\\s*['\"]HTTP_)~i",
+            "description": "Connects to an address taken straight from the web request",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "extract-request",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])extract\\s*\\(\\s*\\$_(?:GET|POST|REQUEST|COOKIE)\\b~i",
+            "description": "Turns web request data into variables (often abused by backdoors)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "disable-error-log",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])ini_set\\s*\\(\\s*(['\"])error_log\\1\\s*,\\s*(?:NULL|null|0|false|(['\"])\\2)\\s*\\)~i",
+            "description": "Switches off the PHP error log (hides activity)",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "htaccess-handler-write",
+            "severity": "warning",
+            "files": "php",
+            "regex": "~(?<![\\w>:$\\\\])file_put_contents\\s*\\([^;]{0,100}\\.htaccess[^;]{0,300}(?:AddHandler|SetHandler|auto_prepend_file)~i",
+            "description": "Writes server configuration that changes how files are executed",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        },
+        {
+            "id": "test-marker",
+            "severity": "critical",
+            "files": "any",
+            "regex": "~SENTINEL-TEST-MALWARE-MARKER~i",
+            "description": "Sentinel self-test marker",
+            "source": "Site Sentinel built-in rules (original, GPL-3.0-or-later)"
+        }
+    ],
+    "hashes": []
+}
