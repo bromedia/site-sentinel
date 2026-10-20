@@ -73,7 +73,7 @@ Core and repository plugins are verified against wordpress.org checksums, so upd
 | `update_grace_seconds` | Files that arrived in the last N seconds (default 120) get no checksum-mismatch or unexplained-change finding yet; they are judged on the next run. This stops a scan that lands in the middle of a WordPress update from raising a false alarm. Malware pattern hits, PHP in uploads and `wp-config.php`/`.htaccess` changes are never delayed. `0` disables it. |
 | `max_scan_bytes` | For files larger than this, the first and last half are scanned (malware is often appended). |
 | `wp_checksums` | Set `false` to stop contacting wordpress.org. |
-| `auto_accept_unverified_updates` | Default `false`. `true` accepts a premium plugin or theme update on its version change alone, as earlier releases did. Never applies to a wordpress.org plugin bumped to a version wordpress.org has not published, nor while wordpress.org cannot be reached to confirm a plugin is not hosted there. |
+| `auto_accept_unverified_updates` | Default `false`. `true` accepts a premium plugin or theme update on its version change alone, as earlier releases did. Never applies to a wordpress.org plugin bumped to a version wordpress.org has not published, nor while wordpress.org cannot be reached to confirm a plugin is not hosted there. That safeguard needs `wp_checksums`: with it off, nothing is looked up and every version bump is auto-accepted. |
 | `heartbeat_url` | URL pinged after each completed run. |
 | `clamscan_path`, `yara_path`, `yara_rules` | Optional external scanners; found on `PATH` automatically (YARA also needs `yara_rules`). |
 | `rules_url`, `rules_public_key`, `allow_unsigned_rules` | See [docs/RULES.md](docs/RULES.md). |
