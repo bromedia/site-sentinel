@@ -15,6 +15,8 @@ final class Run
     public const MARKER = 'SETUP-PENDING.txt';
     /** A full scan is due once the last complete one is this old (cron may run only every few hours). */
     public const FULL_EVERY = 72000;
+    /** The welcome email, kept until it has gone out: it is also the owner's test that alerts arrive. */
+    private const WELCOME = 'welcome-pending.json';
     /** Written only by a completed setup: if any is present, the site has been set up before. */
     private const INSTALLED = ['selfcheck.json', 'status.json', 'versions.json', 'settings-recipients.json', Config::LAST_GOOD_SETTINGS];
 
@@ -43,11 +45,12 @@ final class Run
             @unlink($marker); // e.g. the package was extracted again over a working install
         }
 
-        $lines = [];
+        $welcome = self::sendWelcome($state, $channels);
+        $lines = $welcome['lines'];
         if ($config->settingsProblem !== '') {
-            $lines = self::settingsProblem($config, $state, $channels, $mailer, $clock());
+            $lines = array_merge($lines, self::settingsProblem($config, $state, $channels, $mailer, $clock()));
         } elseif (isset($selfFiles['settings'])) {
-            $lines = self::settingsChanged($config, $state, $channels, $selfFiles, $mailer);
+            $lines = array_merge($lines, self::settingsChanged($config, $state, $channels, $selfFiles, $mailer));
         }
         $monitor = new Monitor($config, $state, $http, $channels, $selfFiles, $clock);
         $r = $monitor->run('check');
@@ -56,7 +59,32 @@ final class Run
             $r = ['exit' => max($r['exit'], $f['exit']), 'lines' => array_merge($r['lines'], $f['lines'])];
         }
         $r['lines'] = $r['exit'] === 0 ? $lines : array_merge($lines, $r['lines']);
+        if (!$welcome['ok']) {
+            $r['exit'] = 2; // email is not getting through
+        }
         return $r;
+    }
+
+    /**
+     * Sends the welcome email if it is still waiting, and forgets it once it has gone out.
+     *
+     * @param Channel[] $channels
+     * @return array{ok:bool, lines:string[]}
+     */
+    private static function sendWelcome(State $state, array $channels): array
+    {
+        $w = $state->readJson(self::WELCOME);
+        if (!isset($w['subject'], $w['body'])) {
+            return ['ok' => true, 'lines' => []];
+        }
+        $r = (new Alerter($channels))->send((string)$w['subject'], (string)$w['body'], Finding::CRITICAL);
+        $ok = $r['attempted'] > 0 && strpos(implode("\n", $r['results']), 'FAILED') === false;
+        if ($ok) {
+            @unlink($state->path(self::WELCOME));
+        }
+        return ['ok' => $ok, 'lines' => array_map(function ($l) {
+            return 'welcome ' . $l;
+        }, $r['results'])];
     }
 
     public static function fullDue(State $state, int $now): bool
@@ -180,12 +208,11 @@ final class Run
                     $body[] = '  - ' . $n;
                 }
             }
-            $r = (new Alerter($channels))->send("Site Sentinel is now protecting $site", self::text($body), Finding::CRITICAL);
-            $lines = [sprintf('setup complete: %d file(s) recorded for %s', $scan['count'], $site)];
-            foreach ($r['results'] as $l) {
-                $lines[] = 'alert ' . $l;
-            }
-            return ['exit' => $r['ok'] ? 0 : 2, 'lines' => $lines];
+            // Kept until it has gone out, and retried on later runs; the setup itself is not redone.
+            $state->writeJson(self::WELCOME, ['subject' => "Site Sentinel is now protecting $site", 'body' => self::text($body)]);
+            $w = self::sendWelcome($state, $channels);
+            $lines = array_merge([sprintf('setup complete: %d file(s) recorded for %s', $scan['count'], $site)], $w['lines']);
+            return ['exit' => $w['ok'] ? 0 : 2, 'lines' => $lines];
         } finally {
             $lock->release();
         }

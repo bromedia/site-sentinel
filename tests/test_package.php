@@ -158,6 +158,22 @@ t('run: the first run sets up, emails "now protecting", removes the marker; late
     assertSame(1, count($mail->sent));
 });
 
+t('run: a welcome email that could not be sent is retried, without setting up again', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    $mail->failing = true;
+    $r = runPackaged($dir, $mail);
+    assertSame(2, $r['exit'], 'a setup whose email failed is not a clean run');
+    assertTrue(is_file($dir . '/state/baseline.txt'), 'the setup itself is kept');
+    $baseline = (string)file_get_contents($dir . '/state/baseline.txt');
+    $mail->failing = false;
+    runPackaged($dir, $mail);
+    assertSame(['Site Sentinel is now protecting My website'], $mail->subjects(), 'sent once mail works');
+    assertSame($baseline, (string)file_get_contents($dir . '/state/baseline.txt'), 'not set up again');
+    runPackaged($dir, $mail);
+    assertSame(1, count($mail->sent), 'and only once');
+});
+
 t('run: no baseline and no marker is reported, never silently re-baselined', function () {
     [, , $dir] = packagedSite();
     $mail = new MailBox();
