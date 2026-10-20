@@ -85,6 +85,9 @@ final class Analyzer
 
             $rec = $c['new'];
             $isNew = $c['type'] === 'new';
+            // An unchanged file queued for detection again (its dismissal was removed): detections
+            // only, never change findings, deferral or update grouping.
+            $recheck = $c['type'] === 'recheck';
             $hash = (string)$rec['hash'];
 
             if (($rec['mode'] & 0170000) === 0120000) {
@@ -105,12 +108,12 @@ final class Analyzer
 
             $status = ($this->wp !== null && !$this->config->isUploads($rel)) ? $this->wp->verify($rel) : WpChecksum::UNKNOWN;
             if ($status === WpChecksum::VERIFIED) {
-                $official++;
+                $official += $recheck ? 0 : 1;
                 continue;
             }
             // An update copies many files over a few seconds; a scan that lands mid-copy must not call that tampering.
             // ctime, not mtime, because extracting an archive restores old mtimes. Scanner hits are never delayed.
-            $fresh = $grace > 0 && $now > 0 && ($now - max((int)$rec['mtime'], (int)($rec['ctime'] ?? 0))) < $grace;
+            $fresh = !$recheck && $grace > 0 && $now > 0 && ($now - max((int)$rec['mtime'], (int)($rec['ctime'] ?? 0))) < $grace;
             if ($fresh && !$hits && ($status === WpChecksum::MISMATCH || $status === WpChecksum::EXTRA) && !$c['stealth']) {
                 $hold[$rel] = true;
                 $deferred++;
@@ -133,6 +136,13 @@ final class Analyzer
                     $findings[] = $h;
                 }
                 $hold[$rel] = true;
+                continue;
+            }
+            if ($recheck) {
+                if ($this->config->isCodeFile($rel)) {
+                    $queue[$rel] = $this->config->abs($rel); // external scanners, without update grouping
+                    $queueHashes[$rel] = $hash;
+                }
                 continue;
             }
 

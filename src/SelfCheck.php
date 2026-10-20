@@ -53,6 +53,20 @@ final class SelfCheck
         return $out;
     }
 
+    /**
+     * Whether one tracked file is exactly as last trusted. A label never recorded counts as
+     * absent, so a file that has appeared since is not trusted. Before the first record of
+     * all, nothing has been trusted yet and an absent file is fine.
+     */
+    public function isTrusted(string $label): bool
+    {
+        if (!isset($this->files[$label])) {
+            throw new \InvalidArgumentException("unknown Sentinel file '$label'");
+        }
+        $stored = $this->state->readJson('selfcheck.json');
+        return self::hashOf($this->files[$label]) === (string)($stored[$label] ?? '');
+    }
+
     /** @return string[] labels of the files the last check() found changed, missing or new */
     public function untrusted(): array
     {

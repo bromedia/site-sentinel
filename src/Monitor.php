@@ -103,11 +103,13 @@ final class Monitor
             $dismissals
         );
 
-        $d = (new Differ($this->config))->diff($baselineFile, $startAfter, $budget, $full);
+        $differ = new Differ($this->config);
+        $d = $differ->diff($baselineFile, $startAfter, $budget, $full);
         $oldVersions = $this->state->readJson('versions.json');
         $newVersions = $wpOn ? VersionTracker::read($this->config) : [];
         $now = ($this->clock)();
-        $a = $analyzer->analyze($d['changes'], $oldVersions, $newVersions, false, $now);
+        $recheck = array_values(array_filter((array)$this->state->readJson(Dismissals::RECHECK_FILE), 'is_string'));
+        $a = $analyzer->analyze(array_merge($d['changes'], $this->recheckChanges($recheck, $d['changes'], $differ)), $oldVersions, $newVersions, false, $now);
 
         $findings = $a['findings'];
         foreach ($d['unreadable'] as $dir) {
@@ -149,6 +151,20 @@ final class Monitor
                     }
                 }
                 $this->state->writeJson('versions.json', $store);
+            }
+            if ($recheck) {
+                // Keep a queued file only while it still produces a finding; once it is dismissed
+                // again, cleaned, changed into something harmless, removed or excluded, drop it.
+                $still = [];
+                foreach ($recheck as $p) {
+                    foreach ($findings as $f) {
+                        if ($f->path === $p) {
+                            $still[] = $p;
+                            break;
+                        }
+                    }
+                }
+                $this->state->writeJson(Dismissals::RECHECK_FILE, $still);
             }
         } catch (\Throwable $e) {
             $findings[] = new Finding(
@@ -220,6 +236,39 @@ final class Monitor
             }
         }
         return ['exit' => ($crit + $warn) > 0 ? 1 : 0, 'lines' => $lines];
+    }
+
+    /**
+     * Analysis entries for queued files that did not change this run (changed ones are already
+     * being analysed). They are checked for detections only and never written to the baseline.
+     *
+     * @param string[] $paths
+     * @param array[] $changes this run's changes
+     * @return array[]
+     */
+    private function recheckChanges(array $paths, array $changes, Differ $differ): array
+    {
+        if (!$paths) {
+            return [];
+        }
+        $seen = [];
+        foreach ($changes as $c) {
+            $seen[(string)$c['path']] = true;
+        }
+        $excluded = new PathFilter($this->config->exclusions());
+        $out = [];
+        foreach ($paths as $p) {
+            if (isset($seen[$p]) || $excluded->matches($p)) {
+                continue;
+            }
+            $st = @lstat($this->config->abs($p));
+            if ($st === false || ($st['mode'] & 0170000) !== 0100000) {
+                continue; // gone, or no longer a regular file
+            }
+            [$rec, $unreadable] = $differ->record(['path' => $p, 'size' => (int)$st['size'], 'mtime' => (int)$st['mtime'], 'ctime' => (int)$st['ctime'], 'mode' => (int)$st['mode'], 'hash' => '']);
+            $out[] = ['type' => 'recheck', 'path' => $p, 'old' => null, 'new' => $rec, 'stealth' => false, 'content_same' => true, 'unreadable' => $unreadable];
+        }
+        return $out;
     }
 
     private function failed(\Throwable $e): array

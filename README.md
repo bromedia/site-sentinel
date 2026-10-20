@@ -62,7 +62,7 @@ Some legitimate files match a detection: a vendor's obfuscated licence check, an
 php sentinel.php dismiss 912559fc1210 --reason="Vendor licence check in Premium 2.0, reviewed"
 ```
 
-A dismissal covers that one rule on that one file with its exact current content: if the file changes, or a different rule matches it, you are alerted again. It records who dismissed it, when and why (`dismiss --list`). Only detections can be dismissed; changes (`unexplained-change`, `unverified-update`, a changed `wp-config.php`, and so on) are reviewed and then accepted with `accept --path=...`, so a new file that matched a rule usually needs both. `dismiss` refuses a file that has changed since it was reported, so you only ever dismiss what you saw.
+A dismissal covers that one rule on that one file with its exact current content: if the file changes, or a different rule matches it, you are alerted again. It records who dismissed it, when and why (`dismiss --list`). Only detections can be dismissed; changes (`unexplained-change`, `unverified-update`, a changed `wp-config.php`, and so on) are reviewed and then accepted with `accept --path=...`, so a new file that matched a rule usually needs both. `dismiss` refuses a file that has changed since it was reported, so you only ever dismiss what you saw. `dismiss --remove=<id>` puts the finding back: that file is analysed on every scan, even if it was accepted, until it stops matching or is dismissed again. If `dismissals.json` is ever changed by hand, scans ignore it and raise a Critical alert, and `dismiss` refuses to edit it until you have reviewed it and run `accept --self` (or deleted it).
 
 ### WordPress updates
 
