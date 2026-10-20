@@ -59,6 +59,8 @@ final class Analyzer
         $groups = [];
         $queue = [];
         $queueHashes = [];
+        $recheckGaps = [];
+        $rechecked = [];
         $dismissed = 0;
         $official = 0;
         $removed = 0;
@@ -101,12 +103,17 @@ final class Analyzer
                 continue;
             }
 
-            $hits = $this->locations->scan($rel, $rec, $isNew);
+            // A recheck runs every detection the file got when it arrived, including new-file-only
+            // ones (configuration or executables dropped into uploads or tmp); change findings stay off.
+            $hits = $this->locations->scan($rel, $rec, $isNew || $recheck);
             if ($this->config->isCodeFile($rel)) {
                 $hits = array_merge($hits, $this->patterns->scan($rel, $this->config->abs($rel), $hash));
             }
 
             $status = ($this->wp !== null && !$this->config->isUploads($rel)) ? $this->wp->verify($rel) : WpChecksum::UNKNOWN;
+            if ($recheck && $status === WpChecksum::UNKNOWN) {
+                $recheckGaps[$rel][] = 'checksums';
+            }
             if ($status === WpChecksum::VERIFIED) {
                 $official += $recheck ? 0 : 1;
                 continue;
@@ -142,6 +149,7 @@ final class Analyzer
                 if ($this->config->isCodeFile($rel)) {
                     $queue[$rel] = $this->config->abs($rel); // external scanners, without update grouping
                     $queueHashes[$rel] = $hash;
+                    $rechecked[$rel] = true;
                 }
                 continue;
             }
@@ -172,7 +180,13 @@ final class Analyzer
         }
 
         if ($queue) {
-            foreach ($this->external->scan($queue) as $f) {
+            $externalHits = $this->external->scan($queue);
+            if (!$this->external->enabled() || $this->external->errors()) {
+                foreach (array_keys($rechecked) as $p) {
+                    $recheckGaps[(string)$p][] = 'external';
+                }
+            }
+            foreach ($externalHits as $f) {
                 $f = new Finding($f->severity, $f->path, $f->rule, $f->message, $f->hash !== '' ? $f->hash : (string)($queueHashes[$f->path] ?? ''));
                 if (!$this->undismissed([$f], $dismissed)) {
                     continue;
@@ -230,7 +244,7 @@ final class Analyzer
             $crit = array_values(array_filter($findings, function (Finding $f) {
                 return $f->severity >= Finding::CRITICAL;
             }));
-            return ['findings' => $crit, 'info' => [], 'hold' => [], 'held_groups' => [], 'notes' => $notes];
+            return ['findings' => $crit, 'info' => [], 'hold' => [], 'held_groups' => [], 'notes' => $notes, 'recheck_gaps' => $recheckGaps];
         }
 
         if ($dismissed > 0) {
@@ -249,7 +263,7 @@ final class Analyzer
         foreach (array_keys($hold) as $p) {
             $heldGroups[self::groupOf((string)$p)] = true;
         }
-        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes];
+        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes, 'recheck_gaps' => $recheckGaps];
     }
 
     /**

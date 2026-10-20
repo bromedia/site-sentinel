@@ -182,6 +182,11 @@ final class Dismissals
         if (count($removed) > 1) {
             return self::fail("id $id is ambiguous; use more of its characters");
         }
+        $e = array_values($removed)[0];
+        // The file may have been accepted since it was dismissed, and scans only analyse changed
+        // files, so queue it for analysis first: if that write fails nothing has been removed yet,
+        // and the command can simply be retried.
+        self::queueRecheck($this->state, (string)$e['path'], (string)$e['rule'], (string)$e['sha256']);
         $this->entries = $keep;
         $this->save($selfFiles);
         $log = new AlertLog($this->state);
@@ -189,9 +194,6 @@ final class Dismissals
             $log->forget((string)$key); // so it alerts again when next detected
         }
         $e = array_values($removed)[0];
-        // The file may have been accepted since it was dismissed, and scans only analyse changed
-        // files, so queue it explicitly: it is analysed on every run until it no longer matches.
-        self::queueRecheck($this->state, (string)$e['path']);
         return ['exit' => 0, 'lines' => [sprintf('removed dismissal %s: %s on %s; it is analysed again from the next scan', substr(self::keyOf($e), 0, 12), $e['rule'], $e['path'])]];
     }
 
@@ -218,13 +220,41 @@ final class Dismissals
         return $lines;
     }
 
-    public static function queueRecheck(State $state, string $path): void
+    /** @return array[] queued re-analysis entries: {path, rule, sha256} */
+    public static function recheckQueue(State $state): array
     {
-        $queue = array_values(array_filter((array)$state->readJson(self::RECHECK_FILE), 'is_string'));
-        if (!in_array($path, $queue, true)) {
-            $queue[] = $path;
-            $state->writeJson(self::RECHECK_FILE, $queue);
+        return array_values(array_filter((array)$state->readJson(self::RECHECK_FILE), function ($e) {
+            return is_array($e) && isset($e['path'], $e['rule'], $e['sha256']) && is_string($e['path']);
+        }));
+    }
+
+    public static function queueRecheck(State $state, string $path, string $rule, string $sha256): void
+    {
+        $queue = self::recheckQueue($state);
+        foreach ($queue as $e) {
+            if ($e['path'] === $path && $e['rule'] === $rule && $e['sha256'] === $sha256) {
+                return;
+            }
         }
+        $queue[] = ['path' => $path, 'rule' => $rule, 'sha256' => $sha256];
+        $state->writeJson(self::RECHECK_FILE, $queue);
+    }
+
+    /**
+     * Whether a recheck of this rule actually ran. A check that could not run (scanner failed or
+     * unavailable, official checksums unreachable) must leave the entry pending, not count as clean.
+     *
+     * @param string[] $gaps what could not be checked for that file this run: 'external', 'checksums'
+     */
+    public static function recheckRan(string $rule, array $gaps): bool
+    {
+        if (strpos($rule, 'clamav:') === 0 || strpos($rule, 'yara:') === 0) {
+            return !in_array('external', $gaps, true);
+        }
+        if ($rule === 'checksum-mismatch' || $rule === 'unexpected-file') {
+            return !in_array('checksums', $gaps, true);
+        }
+        return true;
     }
 
     private function save(array $selfFiles): void

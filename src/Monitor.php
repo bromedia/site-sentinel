@@ -108,8 +108,8 @@ final class Monitor
         $oldVersions = $this->state->readJson('versions.json');
         $newVersions = $wpOn ? VersionTracker::read($this->config) : [];
         $now = ($this->clock)();
-        $recheck = array_values(array_filter((array)$this->state->readJson(Dismissals::RECHECK_FILE), 'is_string'));
-        $a = $analyzer->analyze(array_merge($d['changes'], $this->recheckChanges($recheck, $d['changes'], $differ)), $oldVersions, $newVersions, false, $now);
+        $recheck = Dismissals::recheckQueue($this->state);
+        $a = $analyzer->analyze(array_merge($d['changes'], $this->recheckChanges(array_unique(array_column($recheck, 'path')), $d['changes'], $differ)), $oldVersions, $newVersions, false, $now);
 
         $findings = $a['findings'];
         foreach ($d['unreadable'] as $dir) {
@@ -153,18 +153,7 @@ final class Monitor
                 $this->state->writeJson('versions.json', $store);
             }
             if ($recheck) {
-                // Keep a queued file only while it still produces a finding; once it is dismissed
-                // again, cleaned, changed into something harmless, removed or excluded, drop it.
-                $still = [];
-                foreach ($recheck as $p) {
-                    foreach ($findings as $f) {
-                        if ($f->path === $p) {
-                            $still[] = $p;
-                            break;
-                        }
-                    }
-                }
-                $this->state->writeJson(Dismissals::RECHECK_FILE, $still);
+                $this->state->writeJson(Dismissals::RECHECK_FILE, $this->pendingRechecks($recheck, $findings, (array)($a['recheck_gaps'] ?? []), $dismissals));
             }
         } catch (\Throwable $e) {
             $findings[] = new Finding(
@@ -236,6 +225,50 @@ final class Monitor
             }
         }
         return ['exit' => ($crit + $warn) > 0 ? 1 : 0, 'lines' => $lines];
+    }
+
+    /**
+     * Which queued rechecks stay pending. An entry is finished only when its file is gone, excluded
+     * or changed (a changed file is analysed as a change), when the same finding is dismissed again,
+     * or when the check really ran and the rule no longer fires. Still firing, or not checkable this
+     * run (scanner failure, checksums unreachable), keeps it.
+     *
+     * @param array[] $queue
+     * @param Finding[] $findings
+     * @param array<string,string[]> $gaps
+     * @return array[]
+     */
+    private function pendingRechecks(array $queue, array $findings, array $gaps, ?Dismissals $dismissals): array
+    {
+        $excluded = new PathFilter($this->config->exclusions());
+        $hashes = [];
+        $keep = [];
+        foreach ($queue as $e) {
+            $p = (string)$e['path'];
+            $abs = $this->config->abs($p);
+            if ($excluded->matches($p) || !is_file($abs) || is_link($abs)) {
+                continue;
+            }
+            $hashes[$p] = $hashes[$p] ?? (string)@hash_file('sha256', $abs);
+            if ($hashes[$p] !== $e['sha256']) {
+                continue;
+            }
+            if ($dismissals !== null && $dismissals->covers(new Finding(Finding::WARNING, $p, (string)$e['rule'], '', (string)$e['sha256']))) {
+                continue;
+            }
+            $firing = false;
+            foreach ($findings as $f) {
+                // The rule still fires, or the file could not be fully read or scanned this run.
+                if ($f->path === $p && ($f->rule === $e['rule'] || $f->rule === 'unreadable' || $f->rule === 'scan-error')) {
+                    $firing = true;
+                    break;
+                }
+            }
+            if ($firing || !Dismissals::recheckRan((string)$e['rule'], (array)($gaps[$p] ?? []))) {
+                $keep[] = $e;
+            }
+        }
+        return $keep;
     }
 
     /**
