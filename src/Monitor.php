@@ -143,7 +143,13 @@ final class Monitor
             if ($d['complete'] && $wpOn) {
                 $store = [];
                 foreach ($newVersions as $g => $v) {
-                    if (!isset($a['version_holds'][$g])) {
+                    // A version is recorded only once it has been accepted: not while the update
+                    // waits for review or its copy, and not while the file that declares the
+                    // version is itself held. Recording an unaccepted version would lose where
+                    // the plugin came from (a wordpress.org release), so a later fake bump could
+                    // pass as a premium update.
+                    $file = VersionTracker::versionFile($this->config, (string)$g);
+                    if (!isset($a['version_holds'][$g]) && ($file === null || !isset($a['hold'][$file]))) {
                         $store[$g] = $v;
                     } elseif (isset($oldVersions[$g])) {
                         $store[$g] = $oldVersions[$g];

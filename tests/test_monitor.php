@@ -285,6 +285,42 @@ t('Monitor: with auto-accept, a file held for its own finding does not freeze th
     assertContains('unexplained-change', $n->sent[count($n->sent) - 1]['body']);
 });
 
+t('Monitor: with auto-accept, a held fake version of a repository plugin is never recorded, so a second fake bump is still reported', function () {
+    $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\nfunction foo() {}\n";
+    foreach (['payload in the version file' => 'foo.php', 'payload in another file' => 'inc/extra.php'] as $case => $payloadFile) {
+        [$root, $config, $state, $m, $n, $http] = monitorFixture(
+            ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n", 'wp-content/plugins/foo/foo.php' => $v1],
+            ['profile' => 'wordpress', 'auto_accept_unverified_updates' => true]
+        );
+        $state->writeJson('versions.json', VersionTracker::read($config));
+        coreRoute($http, ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n"]);
+        // Foo 1.0 is published on wordpress.org; the fake versions are not.
+        $http->route('https://downloads.wordpress.org/plugin-checksums/foo/1.0.json', 200, json_encode(['files' => ['foo.php' => ['sha256' => hash('sha256', $v1)]]]));
+        $http->route('https://downloads.wordpress.org/plugin-checksums/foo/', 404, '{"error":"not found"}');
+
+        // Scan 1: a fake version with something that is detected, so that file is held.
+        $fake = str_replace('Version: 1.0', 'Version: 1.0.9', $v1);
+        if ($payloadFile === 'foo.php') {
+            $fake .= "// SENTINEL-TEST-MALWARE-MARKER\n";
+        } else {
+            putFile($root, 'wp-content/plugins/foo/inc/extra.php', "<?php // SENTINEL-TEST-MALWARE-MARKER\n");
+        }
+        putFile($root, 'wp-content/plugins/foo/foo.php', $fake);
+        assertSame(1, $m->run('check')['exit'], $case);
+        assertSame('1.0', $state->readJson('versions.json')['wp-content/plugins/foo'], "$case: an unaccepted version is not recorded");
+
+        // Scan 2: the detected part is gone and the version moves on again.
+        @unlink($root . '/wp-content/plugins/foo/inc/extra.php');
+        putFile($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.10', $v1) . "// quietly changed\n");
+        $hash = hash_file('sha256', $root . '/wp-content/plugins/foo/foo.php');
+        $before = count($n->sent);
+        assertSame(1, $m->run('check')['exit'], "$case: still reported");
+        assertContains('unverified-update', $n->sent[count($n->sent) - 1]['body'], $case);
+        assertTrue(count($n->sent) > $before, $case);
+        assertNotContains($hash, (string)file_get_contents($state->path('baseline.txt')), "$case: not accepted into the baseline");
+    }
+});
+
 t('Monitor: an unreadable directory is reported', function () {
     if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
         skip('root can read everything');
