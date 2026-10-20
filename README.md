@@ -4,6 +4,17 @@ A small file-integrity and malware monitor for web sites. It notices new, modifi
 
 It **detects and alerts**. It never deletes or changes your site files, and it is not a replacement for backups, updates, strong passwords or two-factor login.
 
+## Client package (no terminal needed)
+
+For a site owner who can upload files and add one cron job but has no terminal (for example on xneelo shared hosting), each GitHub release includes `site-sentinel.zip`. It is a `sentinel` folder to extract next to `public_html`, with `INSTALL-XNEELO.txt` inside. The owner:
+
+1. uploads and extracts it with the hosting file manager,
+2. puts their email address in `settings.txt` (plain `name = value` lines, not JSON),
+3. adds one cron job: `/usr/bin/php-wrapper /usr/home/FTP-USERNAME/sentinel/sentinel.php run`,
+4. runs it once and waits for the "Site Sentinel is now protecting ..." email.
+
+`run` sets Sentinel up on its first run (only while the shipped `SETUP-PENDING.txt` is present; a missing baseline on an installed site is reported, never silently recreated), then checks on every run and adds a full scan once a day. It prints nothing when all is well. Packaged installs send plain-language alerts (`"audience": "client"`) that name the contact from `settings.txt` and never ask the owner to run commands; technical detail follows at the end for the developer the alert is forwarded to. Plugin and theme update approval is a visible yes/no line in `settings.txt` (the package ships with `yes`; see [WordPress updates](#wordpress-updates)). Changing `settings.txt` is announced to the previous and the new recipients. Build the ZIP locally with `php build/package.php`.
+
 ## Requirements
 
 - PHP 7.4 or newer on the command line (`php -v`). Optional: `curl`, `sodium` (signed rule updates), `clamscan`, `yara`.
@@ -35,6 +46,7 @@ See [the shared-hosting guide](docs/SHARED-HOSTING.md) for cPanel-style installa
 | `check` | Quick scan (stat-only walk, then scan only new or changed files). Run every 5-10 minutes. |
 | `full` | Nightly scan: hash every code file, verify WordPress core and plugin checksums. |
 | `accept` | Mark the current state as known-good: everything, or `--path=wp-content/plugins/foo` (repeatable). `--self` re-trusts the Sentinel files after you upgrade them. |
+| `run` | The single scheduled job for packaged installs: first-run setup, then `check`, plus `full` once a day. Silent when all is well. |
 | `dismiss` | Mark a reviewed false positive: `dismiss <id> --reason="..."` (the id is shown next to the finding). `--list` shows dismissals, `--remove=<id>` undoes one. |
 | `update-rules` | Download, verify and install the latest rules bundle. |
 | `test-alert` | Send a test alert through every channel. |
@@ -84,6 +96,7 @@ Core and repository plugins are verified against wordpress.org checksums, so upd
 | `update_grace_seconds` | Files that arrived in the last N seconds (default 120) get no checksum-mismatch or unexplained-change finding yet; they are judged on the next run. This stops a scan that lands in the middle of a WordPress update from raising a false alarm. Malware pattern hits, PHP in uploads and `wp-config.php`/`.htaccess` changes are never delayed. `0` disables it. |
 | `max_scan_bytes` | For files larger than this, the first and last half are scanned (malware is often appended). |
 | `wp_checksums` | Set `false` to stop contacting wordpress.org. |
+| `settings_file`, `audience`, `contact` | Used by the client package: a `settings.txt` with recipients, site name, contact and the update policy; `client` for plain-language alerts. Relative paths in the config are relative to the config file. |
 | `auto_accept_unverified_updates` | Default `false`. `true` accepts a premium plugin or theme update on its version change alone, as earlier releases did. Never applies to a wordpress.org plugin bumped to a version wordpress.org has not published, nor while wordpress.org cannot be reached to confirm a plugin is not hosted there. That safeguard needs `wp_checksums`: with it off, nothing is looked up and every version bump is auto-accepted. |
 | `heartbeat_url` | URL pinged after each completed run. |
 | `clamscan_path`, `yara_path`, `yara_rules` | Optional external scanners; found on `PATH` automatically (YARA also needs `yara_rules`). |

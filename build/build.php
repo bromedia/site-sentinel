@@ -11,8 +11,9 @@ $out = "<?php\ndeclare(strict_types=1);\n\n"
     . "// License: GPL-3.0-or-later. See LICENSE in the source repository. No warranty.\n\n"
     . "namespace Sentinel;\n\n"
     . 'const VERSION = ' . var_export($version, true) . ";\n\n"
-    . "// Never run through a web server, even if the file is dropped into a web root.\n"
-    . "if (PHP_SAPI !== 'cli') {\n    http_response_code(404);\n    exit;\n}\n";
+    . "// Never run through a web server, even if the file is dropped into a web root. Some hosts start\n"
+    . "// cron jobs with a CGI build of PHP, so refuse actual web requests rather than every non-CLI SAPI.\n"
+    . "if (PHP_SAPI !== 'cli' && (isset(\$_SERVER['REQUEST_METHOD']) || isset(\$_SERVER['GATEWAY_INTERFACE']) || PHP_SAPI === 'apache2handler' || PHP_SAPI === 'fpm-fcgi')) {\n    http_response_code(404);\n    exit;\n}\n";
 
 foreach ($files as $f) {
     $src = file_get_contents($root . '/src/' . $f);
@@ -27,7 +28,7 @@ foreach ($files as $f) {
     }
     $out .= "\n// ---- $f ----\n" . $src;
 }
-$out .= "\nexit(Cli::main(\$argv));\n";
+$out .= "\nexit(Cli::main(isset(\$argv) ? \$argv : (array)(\$_SERVER['argv'] ?? [])));\n";
 
 $target = $argv[1] ?? $root . '/dist/sentinel.php';
 if (!is_dir(dirname($target)) && !mkdir(dirname($target), 0755, true)) {

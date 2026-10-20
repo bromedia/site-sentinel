@@ -18,6 +18,8 @@ Commands:
   full          full scan: hash everything, verify WordPress checksums (run nightly)
   accept        accept the current state as known-good [--path=REL ...] [--self]
   dismiss       mark a reviewed false positive: dismiss <id> --reason=TEXT | --list | --remove=<id>
+  run           the one scheduled job for packaged installs: first-run setup, then check, plus a
+                full scan once a day; prints nothing when all is well
   update-rules  download, verify and install the latest rules bundle
   test-alert    send a test alert through every configured channel
   doctor        read-only hosting/config checks and last scan history (no network or alerts)
@@ -68,7 +70,7 @@ TXT;
     }
 
     /** @return array{exit:int, out:string[], err:string[]} */
-    public static function execute(array $args, string $script, ?HttpClient $http = null): array
+    public static function execute(array $args, string $script, ?HttpClient $http = null, ?callable $mailer = null): array
     {
         $cmd = $args ? (string)array_shift($args) : 'help';
         $opts = self::parse($args);
@@ -86,15 +88,25 @@ TXT;
             if ($cmd === 'init') {
                 return self::result(Init::run($opts, $script, $http));
             }
-            if (!in_array($cmd, ['check', 'full', 'accept', 'dismiss', 'update-rules', 'test-alert', 'doctor', 'cron'], true)) {
+            if (!in_array($cmd, ['check', 'full', 'run', 'accept', 'dismiss', 'update-rules', 'test-alert', 'doctor', 'cron'], true)) {
                 return ['exit' => 2, 'out' => [], 'err' => array_merge(["unknown command '$cmd'", ''], explode("\n", sprintf(self::USAGE, VERSION)))];
             }
             $configFile = isset($opts['config']) && is_string($opts['config'])
                 ? $opts['config']
                 : ((string)getenv('SENTINEL_CONFIG') !== '' ? (string)getenv('SENTINEL_CONFIG') : dirname($script) . '/sentinel.json');
-            $config = Config::load($configFile);
+            try {
+                $config = Config::load($configFile);
+            } catch (ConfigException $e) {
+                if ($cmd === 'run') {
+                    return self::runConfigError($e->getMessage(), $configFile, $mailer);
+                }
+                throw $e;
+            }
             $config->addExclusion($script);
             $config->addExclusion($configFile);
+            if ($config->settingsFile !== '') {
+                $config->addExclusion($config->settingsFile);
+            }
             if ($cmd === 'doctor') {
                 return self::result(Doctor::run($config, $script, $configFile));
             }
@@ -102,10 +114,12 @@ TXT;
                 return ['exit' => 0, 'out' => Cron::lines($script, $configFile), 'err' => []];
             }
             $state = new State($config->stateDir);
-            $channels = NotifierFactory::fromConfig($config, $http);
-            $selfFiles = Init::selfFiles($script, $configFile, $state);
+            $channels = NotifierFactory::fromConfig($config, $http, $mailer);
+            $selfFiles = Init::selfFiles($script, $configFile, $state, $config->settingsFile);
 
             switch ($cmd) {
+                case 'run':
+                    return self::quiet(Run::execute($config, $state, $http, $channels, $selfFiles, $script, $configFile, null, $mailer));
                 case 'check':
                 case 'full':
                     return self::result((new Monitor($config, $state, $http, $channels, $selfFiles))->run($cmd));
@@ -132,6 +146,57 @@ TXT;
         } catch (\Throwable $e) {
             return ['exit' => 2, 'out' => [], 'err' => ['error: ' . $e->getMessage()]];
         }
+    }
+
+    /** Like result(), but a clean run prints nothing at all (hosting panels email any output). */
+    private static function quiet(array $r): array
+    {
+        $out = self::result($r);
+        if ($r['exit'] === 0 && !$r['lines']) {
+            $out['out'] = [];
+        }
+        return $out;
+    }
+
+    /**
+     * "run" with a configuration that cannot be loaded: there is no working alert channel, so the
+     * error is emailed to any valid address in settings.txt, at most once a day per distinct error.
+     */
+    private static function runConfigError(string $message, string $configFile, ?callable $mailer): array
+    {
+        $err = ['exit' => 2, 'out' => [], 'err' => ['error: ' . $message]];
+        $raw = json_decode((string)@file_get_contents($configFile), true);
+        $settings = is_array($raw) ? (string)($raw['settings_file'] ?? '') : '';
+        if ($settings === '') {
+            return $err;
+        }
+        if ($settings[0] !== '/') {
+            $settings = dirname($configFile) . '/' . $settings;
+        }
+        $to = Settings::emailsLeniently($settings);
+        if (!$to) {
+            return $err;
+        }
+        $seenFile = dirname($configFile) . '/.last-setup-error';
+        $seen = json_decode((string)@file_get_contents($seenFile), true);
+        if (is_array($seen) && ($seen['hash'] ?? '') === sha1($message) && time() - (int)($seen['at'] ?? 0) < 86400) {
+            return $err;
+        }
+        $body = "Site Sentinel could not start, because its settings have a problem:
+
+  $message
+
+"
+            . "Until this is fixed the website is not being monitored. Please forward this email to your web developer.
+";
+        try {
+            (new EmailNotifier($to, '', $mailer))->send('Site Sentinel could not start: settings problem', $body, Finding::CRITICAL);
+            @file_put_contents($seenFile, json_encode(['hash' => sha1($message), 'at' => time()]));
+            $err['err'][] = 'the error was emailed to ' . implode(', ', $to);
+        } catch (\Throwable $e) {
+            $err['err'][] = 'could not email the error: ' . $e->getMessage();
+        }
+        return $err;
     }
 
     /** @param Channel[] $channels */

@@ -7,6 +7,7 @@ return [
     'PathOrder.php',
     'PathFilter.php',
     'Profile.php',
+    'Settings.php',
     'Config.php',
     'Baseline.php',
     'Walker.php',
@@ -36,6 +37,7 @@ return [
     'Cron.php',
     'Doctor.php',
     'Init.php',
+    'Run.php',
     'Accept.php',
     'Cli.php',
 ];
