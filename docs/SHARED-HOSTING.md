@@ -16,7 +16,7 @@ Sentinel is a PHP CLI program, not a WordPress plugin. It needs the hosting acco
   --email=owner@example.com
 ```
 
-Initialisation scans before creating the baseline. Investigate any refusal instead of adding `--force` automatically. It is a rule-based scan, not proof that the site is malware-free. On a large site, initialise at a quiet time: the initial scan has no cooperative time budget.
+Initialisation scans before creating the baseline. Investigate any refusal instead of adding `--force` automatically. It is a rule-based scan, not proof that the site is malware-free. Initialisation uses bounded resumable slices. If paused, repeat the same init command; no baseline is active until completion. Use --restart for intentionally changed settings.
 
 If there is no SSH/terminal, ask the host to execute this command, or temporarily schedule it once in the hosting cron panel with output captured in a private file outside the public directory. Remove that temporary job after it succeeds. Opening the script in a browser does not run it.
 
@@ -49,11 +49,11 @@ The printed schedule is every ten minutes for `check` and 03:17 nightly for `ful
 ## Routine operation
 
 - `check` is the inexpensive, metadata-based pass. It analyses new/changed files; a same-size, same-mtime code edit needs `full` to detect it.
-- `full` rehashes code and rechecks unchanged files against current rules and available official checksums. It is more expensive. The budget only covers comparison; analysis/network work can take additional time. Check the host's resource limits during a pilot.
-- A partial scan resumes when the same command runs again. If `full` is partial and scheduled only nightly, the next slice will be the following night. Run `full` again manually or adjust its schedule to complete coverage in an acceptable time. A ten-minute `check` does not resume `full`.
+- `full` rehashes code and rechecks unchanged files against current rules and available official checksums. It is more expensive. Comparison and analysis share bounded batches and remaining-time timeouts; individual I/O, checkpointing and alerts can overrun. Check the host's resource limits during a pilot.
+- Pending full scans continue during scheduled checks by default, with time reserved for quick and full work. Disable continue_full only if you deliberately want separate full invocations. Optional database checks also receive reserved time.
 - `doctor` distinguishes each mode's last processed run from its last complete traversal. Complete traversal does not imply zero findings or successful verification of every file. Older installations have no history until they run the upgraded monitor.
 - Rule updates are optional and require your own configured rules URL/key; no maintained external feed is configured by default. Updating rules does not immediately rescan the site; run `full` afterward.
-- Verified WordPress.org updates are recognised automatically. Premium/custom update recognition uses a version change plus no scanner findings; it is not an authenticity guarantee. Keep an eye on those updates.
+- Verified WordPress.org updates are automatic; unverified premium/custom changes require review and scoped acceptance. auto_accept_unverified_updates explicitly opts into the weaker legacy version-header heuristic.
 
 After reviewing your own development changes, accept the smallest relevant path, for example:
 
@@ -66,4 +66,4 @@ After reviewing your own development changes, accept the smallest relevant path,
 
 Use a separate config and state directory for every site, passed with `--config=/absolute/path/client.json`. Ensure each corresponding `init` also uses its own `--state` directory. For symlinked uploads, give the target a separate config; Sentinel never follows symlinks. Review sites with relocated `wp-config.php` or a nonstandard content-directory layout before relying on WordPress-specific checks.
 
-This remains a file monitor: it does not inspect posts, users, options or other database content, block requests, repair files or replace backups.
+Optional [database monitoring](DATABASE.md) adds account/option changes, suspicious post content and bulk-post alerts without loading WordPress PHP or writing WordPress data. Neither module blocks requests, repairs files or replaces backups.

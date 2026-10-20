@@ -39,6 +39,9 @@ See [the shared-hosting guide](docs/SHARED-HOSTING.md) for cPanel-style installa
 | `test-alert` | Send a test alert through every channel. |
 | `doctor` | Read-only local hosting checks, excluded paths and last scan history. No scan, network requests or test alerts. |
 | `cron` | Print cron entries with this PHP executable and safely quoted paths; never changes your crontab. |
+| `db-init` | Trust separately reviewed privileged accounts and options (opt-in database module). |
+| `db-check` | Check privileged accounts/options and budgeted post content. |
+| `db-accept` | Trust reviewed changes: `--scope=admins` or `--scope=options`. |
 
 Exit codes: `0` clean, `1` findings reported, `2` tool error.
 For `doctor`, these mean `0` no local issues detected, `1` configuration warnings and `2` a local setup error. A passing doctor does not prove alert delivery or malware absence.
@@ -55,7 +58,7 @@ Each problem alerts once, and Critical problems remind you every `remind_hours` 
 
 ### WordPress updates
 
-Core and repository plugins are verified against wordpress.org checksums, so updates are recognised without help. Premium or custom plugins and themes are grouped by directory: a version bump with clean files is a quiet Info line; changes without a version change are one Warning per plugin. For other sites (`generic` profile) changes are Warnings until you `accept`; run `php sentinel.php accept` after each deploy, for example as the last line of your deploy script.
+Core/repository plugin files matching official checksums are accepted automatically. **Unverified premium/custom updates require review by default**, even with a version-header bump. Review and acknowledge only the intended directory with `accept --path=wp-content/plugins/foo`. The explicit legacy setting `auto_accept_unverified_updates: true` restores the weaker header-version heuristic; an attacker can change that header too. Generic-site changes also require review and scoped acceptance.
 
 ## Configuration
 
@@ -69,7 +72,10 @@ Core and repository plugins are verified against wordpress.org checksums, so upd
 | `exclude` | Patterns to skip: `dir/` for a directory, `*.log`, `**` for any depth. A pattern with a `/` is anchored at the site root. |
 | `sensitive` | Files that raise a Warning on any change. |
 | `uploads_dir` | Where PHP must never appear. Set automatically for WordPress. |
-| `budget_seconds`, `budget_memory_mb` | Cooperative budgets for file comparison. Comparison pauses and resumes on the next invocation of the same command. Analysis, checksum requests, external scanners and initialisation can exceed these budgets; they are not hard process limits. |
+| `budget_seconds`, `budget_memory_mb` | Shared cooperative comparison/analysis budgets. HTTP/external timeouts shrink with remaining time. Individual file I/O, checkpointing and alerts can overrun; this is not an OS process limit. |
+| `scan_batch_files`, `continue_full` | Default batch size 64 (maximum 1000). Pending full scans continue during checks by default, sharing time with quick scans. |
+| `auto_accept_unverified_updates` | False by default: unverified updates stay held for review. |
+| `database` | Optional read-only account/options/post checks; see [database setup](docs/DATABASE.md). Disabled by default. |
 | `update_grace_seconds` | Files that arrived in the last N seconds (default 120) get no checksum-mismatch or unexplained-change finding yet; they are judged on the next run. This stops a scan that lands in the middle of a WordPress update from raising a false alarm. Malware pattern hits, PHP in uploads and `wp-config.php`/`.htaccess` changes are never delayed. `0` disables it. |
 | `max_scan_bytes` | For files larger than this, the first and last half are scanned (malware is often appended). |
 | `wp_checksums` | Set `false` to stop contacting wordpress.org. |
@@ -86,9 +92,13 @@ See `examples/sentinel.json`. To watch a server's `/tmp`, use a second config wi
 - Email from shared hosts is often filtered. Add a second channel (ntfy or Telegram) at least for Critical alerts.
 - Symlinks are never followed, so a symlinked directory (for example `wp-content/uploads` pointing elsewhere, common with deploy tools) is not monitored. `init` lists the ones it finds; give each target its own config with `site_root` set to the target.
 - `wp-config.php` kept one directory above the site root is outside the watched tree.
-- The WordPress database is not inspected: spam posts, rogue users and injected options may produce no file changes.
+- File monitoring cannot detect database-only incidents. Optional [database monitoring](docs/DATABASE.md) needs explicit configuration and its own reviewed baseline.
 - Excluded directories are not scanned at all, including for malware. Review the WordPress cache/backup exclusions for each site.
-- A heartbeat confirms a run processed its slice, even if the traversal was partial; it does not prove complete scan coverage. `doctor` shows the last completed traversal separately. A partial `full` scan resumes on the next `full`, not on a `check`.
+- A heartbeat confirms a run processed its slice, even if the traversal was partial; it does not prove complete scan coverage. `doctor` shows the last completed traversal separately. Pending full scans continue during scheduled checks unless continue_full is disabled. Initialisation also pauses safely: repeat the same init command to resume, or use --restart to discard only unfinished initial-scan progress.
+
+## Upgrade to 0.2
+
+Replace the script from a reviewed build and run `accept --self` for that deliberate upgrade. Existing file baselines remain usable. Unverified updates now require review unless you explicitly select the legacy policy. Database checks stay off until configured and initialised separately.
 
 ## Development
 
