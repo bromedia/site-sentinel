@@ -41,6 +41,12 @@ final class WpChecksum
         return array_values($this->notes);
     }
 
+    /** Whether official core checksums were obtained (null: no core file was looked up). */
+    public function coreVerified(): ?bool
+    {
+        return $this->coreLoaded ? $this->core !== null : null;
+    }
+
     public function isCorePath(string $rel): bool
     {
         $core = $this->coreMap();

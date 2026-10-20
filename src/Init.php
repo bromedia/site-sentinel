@@ -63,7 +63,7 @@ final class Init
         $config->addExclusion($script);
         $config->addExclusion($configFile);
         $state = new State($config->stateDir);
-        $scan = self::scan($config, $state, $http);
+        $scan = self::scan($config, $state, $http, self::selfFiles($script, $configFile, $state));
         $findings = $scan['findings'];
         $notes = $scan['notes'];
         $symlinkDirs = $scan['symlinkDirs'];
@@ -116,12 +116,16 @@ final class Init
      * Walks the whole site once, analysing what a new file would get, and writes a candidate
      * baseline to a temporary file. Nothing is trusted yet: install() does that.
      *
-     * @return array{tmp:string, count:int, findings:Finding[], notes:string[], symlinkDirs:array}
+     * @param array<string,string> $selfFiles Sentinel's own files: a rules.json is used only if it is trusted
+     * @return array{tmp:string, count:int, findings:Finding[], notes:string[], symlinkDirs:array, core_verified:?bool}
      */
-    public static function scan(Config $config, State $state, HttpClient $http): array
+    public static function scan(Config $config, State $state, HttpClient $http, array $selfFiles = []): array
     {
         $rulesFile = $state->path('rules.json');
-        $rules = is_file($rulesFile) ? Rules::load($rulesFile) : Rules::builtin();
+        // A rules file nobody vouches for (one dropped into a fresh or reset state folder) must
+        // not decide what the very first baseline accepts.
+        $trusted = isset($selfFiles['rules']) && (new SelfCheck($state, $selfFiles))->isTrusted('rules');
+        $rules = is_file($rulesFile) && $trusted ? Rules::load($rulesFile) : Rules::builtin();
         $wp = $config->profile === 'wordpress' && $config->wpChecksums ? new WpChecksum($http, $config, $state->path('cache')) : null;
         $analyzer = new Analyzer(
             $config,
@@ -155,7 +159,7 @@ final class Init
             self::flush($analyzer, $batch, $findings, $notes);
         })();
         $count = Baseline::write($tmp, $records);
-        return ['tmp' => $tmp, 'count' => $count, 'findings' => $findings, 'notes' => array_values(array_unique($notes)), 'symlinkDirs' => $symlinkDirs];
+        return ['tmp' => $tmp, 'count' => $count, 'findings' => $findings, 'notes' => array_values(array_unique($notes)), 'symlinkDirs' => $symlinkDirs, 'core_verified' => $wp !== null ? $wp->coreVerified() : null];
     }
 
     /** Makes a scanned baseline the trusted one and starts monitoring from a clean slate. */

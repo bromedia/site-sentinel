@@ -13,7 +13,17 @@ For a site owner who can upload files and add one cron job but has no terminal (
 3. adds one cron job: `/usr/bin/php-wrapper /usr/home/FTP-USERNAME/sentinel/sentinel.php run`,
 4. runs it once and waits for the "Site Sentinel is now protecting ..." email.
 
-`run` sets Sentinel up on its first run (only while the shipped `SETUP-PENDING.txt` is present; a missing baseline on an installed site is reported, never silently recreated), then checks on every run and adds a full scan once a day. It prints nothing when all is well. Packaged installs send plain-language alerts (`"audience": "client"`) that name the contact from `settings.txt` and never ask the owner to run commands; technical detail follows at the end for the developer the alert is forwarded to. Plugin and theme update approval is a visible yes/no line in `settings.txt` (the package ships with `yes`; see [WordPress updates](#wordpress-updates)). Changing `settings.txt` is announced to the previous and the new recipients. Build the ZIP locally with `php build/package.php`.
+Send the client the release asset link, `https://github.com/bromedia/site-sentinel/releases/latest/download/site-sentinel.zip`, not the release page, whose "Source code (zip)" is the wrong download.
+
+`run` sets Sentinel up on its first run, then checks on every run and adds a full scan once a day. It prints nothing when all is well, and a packaged `sentinel.php` started without arguments does the same job, in case a hosting cron wrapper drops the argument.
+- **Setup** happens only while the shipped `SETUP-PENDING.txt` is present and the state folder shows no earlier install. A missing baseline on an installed site is reported, never silently recreated.
+- **Alerts** are in plain language (`"audience": "client"`) and name the contact from `settings.txt`; they never ask the owner to run commands. Technical detail follows at the end, for the developer the alert is forwarded to. File names are escaped, so a file cannot add its own text to an alert.
+- **Plugin and theme update approval** is a visible yes/no line in `settings.txt`. The package ships with `yes`; see [WordPress updates](#wordpress-updates).
+- **Changing `settings.txt`** is announced to the previous and the new recipients, setting by setting and in the previous settings' words, and retried until it has gone out. If `settings.txt` has a mistake or goes missing, Sentinel keeps using the last settings that worked and says so.
+
+These protect against mistakes and casual tampering. Anyone who can write the sentinel folder can also edit what Sentinel remembers there, so for client installs a heartbeat (the `heartbeat =` line) is what notices Sentinel being switched off.
+
+Build the ZIP locally with `php build/package.php`. `INSTALL-XNEELO.txt` also covers updates, false positives and reinstalling, for the developer, using temporary cron jobs instead of a terminal.
 
 ## Requirements
 

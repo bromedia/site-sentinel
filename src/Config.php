@@ -39,6 +39,16 @@ final class Config
     public $audience = 'technical';
     /** Absolute path of settings.txt, or '' when the config has none. */
     public $settingsFile = '';
+    /**
+     * Why settings.txt could not be used, when the last settings that worked were used instead
+     * ('' when settings.txt is fine). Run reports it; monitoring carries on meanwhile.
+     */
+    public $settingsProblem = '';
+    /** The settings in use, as Settings::toArray() (packaged installs only). */
+    public $settings = [];
+
+    /** In the state directory: the last settings that worked, kept so a broken settings.txt never stops monitoring. */
+    public const LAST_GOOD_SETTINGS = 'settings-trusted.json';
     public $heartbeatUrl = '';
     public $rulesUrl = '';
     public $rulesPublicKey = '';
@@ -69,16 +79,42 @@ final class Config
             }
         }
         $settingsFile = (string)($raw['settings_file'] ?? '');
+        $problem = '';
+        $settings = null;
         if ($settingsFile !== '') {
-            $raw = self::withSettings($raw, Settings::load($settingsFile));
+            try {
+                $settings = Settings::load($settingsFile);
+            } catch (SettingsException $e) {
+                $settings = self::lastGoodSettings($raw);
+                if ($settings === null) {
+                    throw new ConfigException($e->getMessage());
+                }
+                $problem = $e->getMessage();
+            }
+            $raw = self::withSettings($raw, $settings);
         }
-        return self::fromArray($raw);
+        $c = self::fromArray($raw);
+        $c->settingsProblem = $problem;
+        $c->settings = $settings !== null ? $settings->toArray() : [];
+        return $c;
+    }
+
+    /** The settings kept when they last worked, if the state directory has them. */
+    private static function lastGoodSettings(array $raw): ?Settings
+    {
+        $dir = (string)($raw['state_dir'] ?? '');
+        $file = $dir . '/' . self::LAST_GOOD_SETTINGS;
+        if ($dir === '' || !is_file($file)) {
+            return null;
+        }
+        $a = json_decode((string)@file_get_contents($file), true);
+        return is_array($a) ? Settings::fromArray($a) : null;
     }
 
     /** Overlays settings.txt: recipients, names, the update policy and an optional heartbeat. */
     private static function withSettings(array $raw, Settings $s): array
     {
-        $raw['channels'] = array_merge([['type' => 'email', 'to' => $s->emails]], (array)($raw['channels'] ?? []));
+        $raw['channels'] = array_merge([['type' => 'email', 'to' => $s->emails, 'from' => $s->from]], (array)($raw['channels'] ?? []));
         if ($s->website !== '') {
             $raw['site_name'] = $s->website;
         }

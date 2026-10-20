@@ -22,7 +22,8 @@ You will need:
    a. Open the sentinel folder and open settings.txt in the file editor.
    b. Replace you@example.com with the address that should receive alerts.
       For more people, add more lines that start with "email =".
-   c. Change "My website" to your website's name. Save.
+   c. Change "My website" to your website's name.
+   d. If your web developer gave you a "heartbeat =" line, paste it at the end. Save.
 
 3. SCHEDULE IT
    a. In the Control Panel, open the Cronjob Manager for your Web Hosting.
@@ -54,5 +55,27 @@ GOOD TO KNOW
    - Checks run every 2 hours, with a deeper scan once a day, so a problem can take up to
      about 2 hours to be noticed.
    - You can edit settings.txt later, for example to change who receives alerts. Both the
-     old and the new addresses are told about the change.
+     old and the new addresses are told about the change. If the file has a mistake, Site
+     Sentinel keeps using the last settings that worked and emails you about the mistake.
    - Updating or removing Site Sentinel is a job for your web developer.
+
+
+FOR YOUR WEB DEVELOPER
+   One-off commands run as a temporary cronjob: add it with the command below, put your
+   address in its notification email, choose Run, read the email, then delete the cronjob.
+     /usr/bin/php-wrapper /usr/home/FTP-USERNAME/sentinel/sentinel.php COMMAND
+
+   - Updating Sentinel: upload only the new sentinel.php into the sentinel folder (extracting
+     the whole ZIP again would reset settings.txt), then run "accept --self". It lists what
+     it now trusts.
+   - A reviewed false positive: "dismiss <id> --reason=..." (the id is in the alert).
+   - Approving an update or change it reported: "accept --path=<path from the alert>".
+   - Diagnostics: "doctor" (also shows which PHP mode the cron wrapper uses).
+   - Setting it up again from scratch: delete the "state" folder inside the sentinel folder
+     and create an empty SETUP-PENDING.txt next to sentinel.php. Sentinel will not set itself
+     up again over an earlier install, because that would accept whatever is on the site.
+   - Older accounts that serve HTTPS from public_ssl: set "site_root" in sentinel.json to
+     "../public_ssl".
+   - A heartbeat (for example a free healthchecks.io check per site, alerting you) is the
+     only thing that notices if someone with access to the site's files switches Sentinel
+     off. Everything else Sentinel keeps on the server can be edited by that person.

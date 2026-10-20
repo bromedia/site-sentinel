@@ -1,13 +1,14 @@
 name: Release
 
 # Publishes a GitHub Release with the client package when a version tag (v0.2.0, ...) is pushed.
-# The tag must point at a commit on the default branch that passed "Test and build".
+# The tag must point at a commit on the default branch that passed "Test and build" (checked below).
 on:
   push:
     tags: ['v*']
 
 permissions:
   contents: write
+  checks: read
 
 jobs:
   release:
@@ -25,8 +26,17 @@ jobs:
         run: |
           git merge-base --is-ancestor "$GITHUB_SHA" "origin/${{ github.event.repository.default_branch }}"
           test "v$(cat VERSION)" = "$GITHUB_REF_NAME"
-      - name: Regression suite
-        run: php tests/run.php
+      - name: The tagged commit passed CI on every PHP version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ok=$(gh api "repos/${{ github.repository }}/commits/$GITHUB_SHA/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name | startswith("test (")) | .conclusion] | (length >= 4 and all(. == "success"))')
+          test "$ok" = "true" || { echo "the tagged commit has not passed Test and build on all PHP versions"; exit 1; }
+      - name: Regression suite and PHP 7.4 compatibility
+        run: |
+          php tests/run.php
+          php build/compat.php
       - name: Build the script and the client package
         run: |
           php build/package.php dist/site-sentinel.zip

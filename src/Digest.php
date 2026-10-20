@@ -92,7 +92,7 @@ final class Digest
             }
             $lines[] = '';
         }
-        return ['subject' => $subject, 'body' => implode("\n", $lines), 'top' => $top];
+        return ['subject' => $subject, 'body' => implode("\n", array_map([Finding::class, 'line'], $lines)), 'top' => $top];
     }
 
     /** Problems with Sentinel itself rather than with the website's files. */
@@ -197,7 +197,7 @@ final class Digest
         foreach ($info as $i) {
             $lines[] = '  info: ' . $i;
         }
-        return ['subject' => $subject, 'body' => implode("\n", $lines), 'top' => $top];
+        return ['subject' => $subject, 'body' => implode("\n", array_map([Finding::class, 'line'], $lines)), 'top' => $top];
     }
 
     private static function action(Finding $f): string

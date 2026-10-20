@@ -59,12 +59,18 @@ TXT;
 
     public static function main(array $argv): int
     {
-        $r = self::execute(array_slice($argv, 1), (string)($argv[0] ?? 'sentinel.php'));
+        if (PHP_SAPI !== 'cli') {
+            @set_time_limit(0); // some hosts run cron jobs through php-cgi, with the web time limit
+        }
+        $r = self::execute(array_slice($argv, 1), (string)($argv[0] ?? (isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : 'sentinel.php')));
+        // STDOUT and STDERR exist only in the CLI build of PHP.
+        $out = defined('STDOUT') ? STDOUT : fopen('php://stdout', 'w');
+        $err = defined('STDERR') ? STDERR : fopen('php://stderr', 'w');
         foreach ($r['out'] as $line) {
-            fwrite(STDOUT, $line . "\n");
+            fwrite($out, $line . "\n");
         }
         foreach ($r['err'] as $line) {
-            fwrite(STDERR, $line . "\n");
+            fwrite($err, $line . "\n");
         }
         return $r['exit'];
     }
@@ -72,6 +78,10 @@ TXT;
     /** @return array{exit:int, out:string[], err:string[]} */
     public static function execute(array $args, string $script, ?HttpClient $http = null, ?callable $mailer = null): array
     {
+        if (!$args && self::packaged($script)) {
+            // A packaged install has one job; if the host's cron wrapper drops the argument, do it anyway.
+            $args = ['run'];
+        }
         $cmd = $args ? (string)array_shift($args) : 'help';
         $opts = self::parse($args);
         if ($cmd === 'version' || $cmd === '--version') {
@@ -98,7 +108,7 @@ TXT;
                 $config = Config::load($configFile);
             } catch (ConfigException $e) {
                 if ($cmd === 'run') {
-                    return self::runConfigError($e->getMessage(), $configFile, $mailer);
+                    return self::runConfigError($e->getMessage(), $configFile, $mailer, $script);
                 }
                 throw $e;
             }
@@ -113,7 +123,14 @@ TXT;
             if ($cmd === 'cron') {
                 return ['exit' => 0, 'out' => Cron::lines($script, $configFile), 'err' => []];
             }
-            $state = new State($config->stateDir);
+            try {
+                $state = new State($config->stateDir);
+            } catch (\Throwable $e) {
+                if ($cmd === 'run') {
+                    return self::runConfigError('the state folder cannot be created: ' . $e->getMessage(), $configFile, $mailer, $script);
+                }
+                throw $e;
+            }
             $channels = NotifierFactory::fromConfig($config, $http, $mailer);
             $selfFiles = Init::selfFiles($script, $configFile, $state, $config->settingsFile);
 
@@ -158,45 +175,84 @@ TXT;
         return $out;
     }
 
+    /** Whether the script sits in a client package folder (its sentinel.json uses a settings.txt). */
+    private static function packaged(string $script): bool
+    {
+        $raw = json_decode((string)@file_get_contents(dirname($script) . '/sentinel.json'), true);
+        return is_array($raw) && (string)($raw['settings_file'] ?? '') !== '';
+    }
+
     /**
-     * "run" with a configuration that cannot be loaded: there is no working alert channel, so the
-     * error is emailed to any valid address in settings.txt, at most once a day per distinct error.
+     * "run" with a configuration that cannot be used: there is no working alert channel, so the
+     * error is emailed, at most once a day per distinct error, to every address that may be
+     * waiting for alerts: any valid one in settings.txt, and the ones that last worked.
      */
-    private static function runConfigError(string $message, string $configFile, ?callable $mailer): array
+    private static function runConfigError(string $message, string $configFile, ?callable $mailer, string $script = ''): array
     {
         $err = ['exit' => 2, 'out' => [], 'err' => ['error: ' . $message]];
+        $dir = dirname($configFile);
         $raw = json_decode((string)@file_get_contents($configFile), true);
-        $settings = is_array($raw) ? (string)($raw['settings_file'] ?? '') : '';
-        if ($settings === '') {
-            return $err;
+        $raw = is_array($raw) ? $raw : [];
+        $abs = function (string $p) use ($dir): string {
+            return $p !== '' && $p[0] !== '/' ? $dir . '/' . $p : $p;
+        };
+        $settings = $abs((string)($raw['settings_file'] ?? ''));
+        $stateDir = $abs((string)($raw['state_dir'] ?? 'state'));
+        $to = $settings !== '' ? Settings::emailsLeniently($settings) : [];
+        $last = json_decode((string)@file_get_contents($stateDir . '/' . Config::LAST_GOOD_SETTINGS), true);
+        $known = is_array($last) ? Settings::fromArray($last) : null;
+        foreach ($known !== null ? $known->emails : (array)json_decode((string)@file_get_contents($stateDir . '/settings-recipients.json'), true) as $a) {
+            if (is_string($a) && filter_var($a, FILTER_VALIDATE_EMAIL) !== false) {
+                $to[] = $a;
+            }
         }
-        if ($settings[0] !== '/') {
-            $settings = dirname($configFile) . '/' . $settings;
-        }
-        $to = Settings::emailsLeniently($settings);
+        $to = array_values(array_unique(array_map('strtolower', $to)));
         if (!$to) {
             return $err;
         }
-        $seenFile = dirname($configFile) . '/.last-setup-error';
+        $seenFile = $dir . '/.last-setup-error';
         $seen = json_decode((string)@file_get_contents($seenFile), true);
         if (is_array($seen) && ($seen['hash'] ?? '') === sha1($message) && time() - (int)($seen['at'] ?? 0) < 86400) {
             return $err;
         }
-        $body = "Site Sentinel could not start, because its settings have a problem:
-
-  $message
-
-"
-            . "Until this is fixed the website is not being monitored. Please forward this email to your web developer.
-";
+        $who = $known !== null && $known->contact !== '' ? $known->contact : 'your web developer';
+        $site = $known !== null && $known->website !== '' ? $known->website : 'your website';
+        // A website folder that cannot be found usually means the package was extracted inside it.
+        $webRoot = $script !== '' && strpos($message, 'site_root') !== false ? self::insideWebRoot(dirname($script)) : '';
+        if ($webRoot !== '') {
+            $subject = "Site Sentinel setup could not finish on $site";
+            $body = "Site Sentinel was not started.\n\n" . Run::placementMessage($webRoot) . "\n\nIf you need help, contact $who.\n";
+        } else {
+            $subject = $known !== null ? "Site Sentinel has stopped monitoring $site" : 'Site Sentinel could not start';
+            $body = ($known !== null ? "Site Sentinel has stopped monitoring $site" : 'Site Sentinel could not start')
+                . ", because of a problem with its setup:\n\n  " . Finding::line($message) . "\n\n"
+                . "Until this is fixed the website is not being monitored. Please forward this email to $who.\n";
+        }
         try {
-            (new EmailNotifier($to, '', $mailer))->send('Site Sentinel could not start: settings problem', $body, Finding::CRITICAL);
+            (new EmailNotifier($to, $known !== null ? $known->from : '', $mailer))->send($subject, $body, Finding::CRITICAL);
             @file_put_contents($seenFile, json_encode(['hash' => sha1($message), 'at' => time()]));
             $err['err'][] = 'the error was emailed to ' . implode(', ', $to);
         } catch (\Throwable $e) {
             $err['err'][] = 'could not email the error: ' . $e->getMessage();
         }
         return $err;
+    }
+
+    /**
+     * The website folder this folder sits inside, if any: the commonest install mistake is to
+     * extract the package inside public_html, where the shipped relative paths then point nowhere.
+     */
+    private static function insideWebRoot(string $dir): string
+    {
+        $real = realpath($dir);
+        $p = dirname($real !== false ? $real : $dir);
+        for ($i = 0; $i < 6 && $p !== '/' && $p !== '.' && $p !== ''; $i++) {
+            if (is_file($p . '/wp-config.php') || is_file($p . '/wp-load.php') || in_array(basename($p), ['public_html', 'www', 'htdocs', 'httpdocs', 'public_ssl'], true)) {
+                return $p;
+            }
+            $p = dirname($p);
+        }
+        return '';
     }
 
     /** @param Channel[] $channels */

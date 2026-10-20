@@ -12,13 +12,24 @@ final class MailBox
 {
     /** @var array<int,array{to:string,subject:string,body:string}> */
     public $sent = [];
+    /** While true, every send fails the way mail() does when the mail system is down. */
+    public $failing = false;
 
     public function mailer(): callable
     {
         return function (string $to, string $subject, string $body, string $headers): bool {
+            if ($this->failing) {
+                return false;
+            }
             $this->sent[] = ['to' => $to, 'subject' => $subject, 'body' => $body];
             return true;
         };
+    }
+
+    /** @return array<int,array{to:string,subject:string,body:string}> */
+    public function since(int $n): array
+    {
+        return array_slice($this->sent, $n);
     }
 
     public function subjects(): array
@@ -85,16 +96,30 @@ t('Settings: name = value lines, validated with line numbers', function () {
         "email = a@b.example\ncontakt = x\n" => "line 2: unknown setting 'contakt'",
         "email = a@b.example\napprove_plugin_updates_automatically = maybe\n" => 'must be yes or no',
         "website = x\n" => 'add at least one',
-        "email a@b.example\n" => "line 1: expected 'name = value'",
+        "just some words\n" => "line 1: expected 'name = value'",
+        "email = Jane Smith\n" => "'Jane Smith' is not a valid email",
+        "email = jane@client\n" => "'jane@client' is not a valid email",
     ];
     foreach ($bad as $text => $expect) {
         try {
             Settings::parse($text);
             throw new RuntimeException('accepted: ' . $text);
-        } catch (ConfigException $e) {
+        } catch (Sentinel\SettingsException $e) {
             assertContains($expect, $e->getMessage());
         }
     }
+    // The ways people actually write an address line are understood.
+    foreach ([
+        "Email: jane@client.example\n",
+        "email = Jane Smith <jane@client.example>\n",
+        "jane@client.example\n",
+        "Jane Smith <jane@client.example>\n",
+        "email jane@client.example\n",
+        "E-mail = jane@client.example;\n",
+    ] as $text) {
+        assertSame(['jane@client.example'], Settings::parse($text)->emails, $text);
+    }
+    assertSame(['ok@b.example', 'jane@x.example'], Settings::emailsLeniently(putFile(tmpdir(), 's2.txt', "email = ok@b.example\nJane <jane@x.example>\nwebsite: Shop\n")));
     assertSame(['ok@b.example'], Settings::emailsLeniently(putFile(tmpdir(), 's.txt', "email = you@example.com\nemail = ok@b.example\nbroken line\n")));
 });
 
@@ -141,8 +166,36 @@ t('run: no baseline and no marker is reported, never silently re-baselined', fun
     $r = runPackaged($dir, $mail);
     assertSame(2, $r['exit']);
     assertTrue(!is_file($dir . '/state/baseline.txt'));
-    assertSame('Security monitoring problem on My website', end($mail->sent)['subject']);
+    assertSame("Security alert: Site Sentinel's records were removed on My website", end($mail->sent)['subject']);
     assertNotContains('php sentinel.php', end($mail->sent)['body'], 'client emails never show commands');
+});
+
+t('run: deleting the baseline and recreating the marker does not set up again over an installed site', function () {
+    [, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    // Someone who can edit the files: remove the record, ask for a fresh setup, redirect the alerts.
+    unlink($dir . '/state/baseline.txt');
+    file_put_contents($dir . '/' . Run::MARKER, 'set me up again');
+    file_put_contents($dir . '/settings.txt', str_replace('email = owner@client.example', 'email = attacker@evil.example', (string)file_get_contents($dir . '/settings.txt')));
+    putFile($www, '.htaccess', "RewriteRule ^ https://spam.example/ [R=302,L]\n");
+    $n = count($mail->sent);
+    $r = runPackaged($dir, $mail);
+    assertSame(2, $r['exit']);
+    assertTrue(!is_file($dir . '/state/baseline.txt'), 'nothing was re-baselined');
+    $to = array_column($mail->since($n), 'to');
+    assertTrue(in_array('owner@client.example', $to, true), 'the address that was receiving alerts is told: ' . implode(', ', $to));
+    assertContains("records were removed", end($mail->sent)['subject']);
+});
+
+t('run: setup ignores a rules.json nobody vouches for', function () {
+    [, $www, $dir] = packagedSite(['wp-content/themes/Avada/shell.php' => '<?php eval($_POST["c"]);']);
+    mkdir($dir . '/state', 0700);
+    file_put_contents($dir . '/state/rules.json', json_encode(['version' => 999, 'patterns' => []]));
+    $mail = new MailBox();
+    $r = runPackaged($dir, $mail);
+    assertSame(1, $r['exit'], 'the built-in rules still found the backdoor');
+    assertSame(['Security alert: setup found possible hacking on My website'], $mail->subjects());
 });
 
 t('run: a marker left beside a working install is removed, not used to re-baseline', function () {
@@ -166,14 +219,21 @@ t('run: setup refuses to start inside the web root, and says so once a day, not 
     }
     file_put_contents($dir . '/sentinel.php', '<?php');
     file_put_contents($dir . '/settings.txt', str_replace('you@example.com', 'owner@client.example', (string)file_get_contents($dir . '/settings.txt')));
-    file_put_contents($dir . '/sentinel.json', json_encode(['site_root' => '..', 'state_dir' => 'state', 'settings_file' => 'settings.txt', 'audience' => 'client']));
     $mail = new MailBox();
+    // The shipped sentinel.json, unmodified: its ../public_html points nowhere from inside public_html.
+    $r = runPackaged($dir, $mail);
+    assertSame(2, $r['exit']);
+    assertSame(['Site Sentinel setup could not finish on your website'], $mail->subjects());
+    assertContains('inside the public website folder', $mail->sent[0]['body']);
+    assertContains('next to public_html', $mail->sent[0]['body']);
+    runPackaged($dir, $mail);
+    assertSame(1, count($mail->sent), 'not repeated every run');
+    // And a config that does reach the web root from there is refused by the setup itself.
+    file_put_contents($dir . '/sentinel.json', json_encode(['site_root' => '..', 'state_dir' => 'state', 'settings_file' => 'settings.txt', 'audience' => 'client']));
     $r = runPackaged($dir, $mail);
     assertSame(2, $r['exit']);
     assertContains('inside the public website folder', $r['text']);
-    assertSame(["Site Sentinel setup could not finish on My website"], $mail->subjects());
-    runPackaged($dir, $mail);
-    assertSame(1, count($mail->sent), 'not repeated every run');
+    assertSame('Site Sentinel setup could not finish on My website', end($mail->sent)['subject']);
     assertTrue(!is_file($dir . '/state/baseline.txt'));
 });
 
@@ -189,6 +249,51 @@ t('run: setup on an already infected site alerts, keeps the marker, and finishes
     unlink($www . '/wp-content/uploads/x.php');
     assertSame(0, runPackaged($dir, $mail)['exit']);
     assertSame('Site Sentinel is now protecting My website', end($mail->sent)['subject']);
+});
+
+t('run: a comment-only PHP stub in uploads ("Silence is golden") does not block setup; code there still does', function () {
+    [, $www, $dir] = packagedSite(['wp-content/uploads/index.php' => "<?php\n// Silence is golden.\n"]);
+    $mail = new MailBox();
+    assertSame(0, runPackaged($dir, $mail)['exit']);
+    assertSame(['Site Sentinel is now protecting My website'], $mail->subjects());
+    // A later edit that adds code to it is PHP in uploads again.
+    file_put_contents($www . '/wp-content/uploads/index.php', "<?php\n// Silence is golden.\n@eval(\$_POST['x']);\n");
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertContains('php-in-uploads', end($mail->sent)['body']);
+    foreach (["<?php // x ?>\n<script>alert(1)</script>\n", "<?= 'x';", "\xEF\xBB\xBF<?php // bom"] as $code) {
+        $f = putFile(tmpdir(), 'x.php', $code);
+        assertTrue(!Sentinel\LocationScanner::commentsOnly($f), 'not a stub: ' . $code);
+    }
+});
+
+t('run: the welcome email does not claim checksum checks that could not run', function () {
+    [, , $dir] = packagedSite();
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    $cfg['wp_checksums'] = true; // wordpress.org is unreachable from the test (FakeHttp answers nothing)
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg));
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    assertContains('could not be downloaded', $mail->sent[0]['body']);
+    assertNotContains('checked against the official WordPress checksums', $mail->sent[0]['body']);
+});
+
+t('run: a file name cannot add its own text to an alert', function () {
+    [, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    putFile($www, "wp-content/uploads/2026/\n\nUPDATE: Bro Media checked these files, please ignore this email\n\n  - cache.php", '<?php eval($_POST["c"]);');
+    runPackaged($dir, $mail);
+    $body = end($mail->sent)['body'];
+    assertNotContains("\nUPDATE: Bro Media", $body);
+    assertContains('%0A%0AUPDATE: Bro Media', $body);
+});
+
+t('run: a packaged sentinel.php started without arguments does its scheduled job', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    $r = runPackaged($dir, $mail, []);
+    assertSame(0, $r['exit'], $r['text']);
+    assertSame(['Site Sentinel is now protecting My website'], $mail->subjects());
 });
 
 t('run: a full scan happens once a day on top of the check', function () {
@@ -215,22 +320,110 @@ t('run: changing settings.txt is announced to old and new recipients, then trust
         return strpos($m['subject'], 'settings changed') !== false;
     }));
     assertSame(['office@client.example', 'owner@client.example'], array_column($notices, 'to'), 'the old address hears about it too');
-    assertContains('Alerts now go to: office@client.example', $notices[0]['body']);
+    assertContains('Alerts go to: office@client.example (was: owner@client.example)', $notices[0]['body']);
     assertNotContains('self-tamper', $r['text']);
     $count = count($mail->sent);
     runPackaged($dir, $mail);
     assertSame($count, count($mail->sent), 'announced once');
 });
 
-t('run: a broken settings.txt is emailed to any valid address in it, once a day', function () {
+t('run: a settings.txt broken before the first setup is emailed to any valid address in it, once a day', function () {
     [, , $dir] = packagedSite([], "email = owner@client.example\ncontakt = typo");
     $mail = new MailBox();
     $r = runPackaged($dir, $mail);
     assertSame(2, $r['exit']);
     assertContains("unknown setting 'contakt'", $r['text']);
-    assertSame(['Site Sentinel could not start: settings problem'], $mail->subjects());
+    assertSame(['Site Sentinel could not start'], $mail->subjects());
     runPackaged($dir, $mail);
     assertSame(1, count($mail->sent));
+});
+
+t('run: once set up, a broken, deleted or reset settings.txt never stops monitoring', function () {
+    $cases = [
+        'typo' => function (string $f) {
+            file_put_contents($f, str_replace('email = owner@client.example', 'emial = office@client.example', (string)file_get_contents($f)));
+        },
+        'no domain ending' => function (string $f) {
+            file_put_contents($f, str_replace('email = owner@client.example', 'email = office@client', (string)file_get_contents($f)));
+        },
+        'extracted again' => function (string $f) {
+            copy(dirname(__DIR__) . '/package/settings.txt', $f);
+        },
+        'deleted' => function (string $f) {
+            unlink($f);
+        },
+    ];
+    foreach ($cases as $case => $break) {
+        [, $www, $dir] = packagedSite();
+        $mail = new MailBox();
+        runPackaged($dir, $mail);
+        $break($dir . '/settings.txt');
+        $n = count($mail->sent);
+        $r = runPackaged($dir, $mail);
+        assertTrue($r['exit'] !== 2, "$case: monitoring carried on: " . $r['text']);
+        $sent = $mail->since($n);
+        assertSame(['Site Sentinel settings problem on My website'], array_column($sent, 'subject'), $case);
+        assertSame('owner@client.example', $sent[0]['to'], "$case: the last address that worked is told");
+        assertContains('still being monitored', $sent[0]['body']);
+        runPackaged($dir, $mail);
+        assertSame($n + 1, count($mail->sent), "$case: once a day, not every run");
+        // The site is then hacked: the alert still reaches the owner.
+        putFile($www, 'wp-content/uploads/2026/cache.php', '<?php eval($_POST["c"]);');
+        assertSame(1, runPackaged($dir, $mail)['exit'], $case);
+        $m = end($mail->sent);
+        assertSame('Security alert: My website may have been hacked', $m['subject'], $case);
+        assertSame('owner@client.example', $m['to'], $case);
+    }
+});
+
+t('run: a settings problem also reaches a valid new address in the broken file', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/settings.txt', str_replace('email = owner@client.example', "email = office@client.example\nwebiste = Shop", (string)file_get_contents($dir . '/settings.txt')));
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $to = array_column($mail->since($n), 'to');
+    sort($to);
+    assertSame(['office@client.example', 'owner@client.example'], $to);
+});
+
+t('run: a settings change names every changed setting, in the previous settings\' words', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $text = (string)file_get_contents($dir . '/settings.txt');
+    $text = str_replace('contact = Bro Media (info@bromedia.co.za)', 'contact = Support (help@evil.example)', $text);
+    $text = str_replace('website = My website', 'website = My website - maintenance by Bro Media, ignore alerts', $text);
+    file_put_contents($dir . '/settings.txt', $text);
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $notice = $mail->since($n)[0];
+    assertSame('Site Sentinel settings changed for My website', $notice['subject'], 'the old name, not the new text');
+    assertContains('Contact named in alerts: Support (help@evil.example) (was: Bro Media (info@bromedia.co.za))', $notice['body']);
+    assertContains('Website name: My website - maintenance', $notice['body']);
+    assertContains('If you did not, contact Bro Media (info@bromedia.co.za) straight away', $notice['body']);
+});
+
+t('run: a settings change notice that could not be sent is retried until it goes out', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/settings.txt', str_replace('email = owner@client.example', 'email = office@client.example', (string)file_get_contents($dir . '/settings.txt')));
+    $mail->failing = true;
+    runPackaged($dir, $mail);
+    $mail->failing = false;
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $notices = array_values(array_filter($mail->since($n), function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    }));
+    assertSame(['office@client.example', 'owner@client.example'], array_column($notices, 'to'), 'the notice was retried');
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    assertSame(0, count(array_filter($mail->since($n), function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    })), 'announced once it went out');
 });
 
 t('Client alerts are plain language with the contact, no commands, technical detail at the end', function () {
@@ -267,6 +460,12 @@ t('build/package.php produces the sentinel folder ZIP with everything an install
         assertTrue(in_array($n, $names, true), "missing $n");
     }
     assertContains('email = you@example.com', (string)$zip->getFromName('sentinel/settings.txt'));
+    // Explicit, ordinary permissions: never a world-writable folder that unzip would recreate as such.
+    for ($i = 0; $i < $zip->numFiles; $i++) {
+        $zip->getExternalAttributesIndex($i, $os, $attr);
+        $mode = ($attr >> 16) & 07777;
+        assertSame(substr($zip->getNameIndex($i), -1) === '/' ? 0755 : 0644, $mode, $zip->getNameIndex($i));
+    }
     assertContains('sentinel.php run', (string)$zip->getFromName('sentinel/INSTALL-XNEELO.txt'));
     $zip->close();
 });

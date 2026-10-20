@@ -33,17 +33,22 @@ $files = [
     'sentinel/INSTALL-XNEELO.txt' => $root . '/package/INSTALL-XNEELO.txt',
     'sentinel/LICENSE.txt' => $root . '/LICENSE',
 ];
+// Ordinary permissions, set explicitly so they never depend on the build machine: 755 for the
+// folder, 644 for files. Not owner-only, because a hosting file manager may extract as a different
+// system user than the one cron runs as. Never world-writable: ZipArchive records a bare folder as
+// 0777, which unzip applies as it is, and then any account on a shared server that can reach the
+// folder could replace sentinel.php, which cron runs every few hours. The folder belongs outside
+// the web root, its .htaccess blocks web access, and Sentinel creates its state directory itself
+// with owner-only permissions.
 $zip->addEmptyDir('sentinel');
+$zip->setExternalAttributesName('sentinel/', ZipArchive::OPSYS_UNIX, (040755 << 16));
 foreach ($files as $name => $path) {
     if (!is_file($path)) {
         fwrite(STDERR, "missing $path\n");
         exit(1);
     }
-    // Ordinary permissions on purpose: a hosting file manager may extract as a different system user
-    // than the one cron runs as, and owner-only files could then not even be read by Sentinel. The
-    // folder belongs outside the web root, its .htaccess blocks web access, and Sentinel creates its
-    // state directory itself with owner-only permissions.
     $zip->addFile($path, $name);
+    $zip->setExternalAttributesName($name, ZipArchive::OPSYS_UNIX, (0100644 << 16));
 }
 if (!$zip->close()) {
     fwrite(STDERR, "cannot write $target\n");
