@@ -44,7 +44,7 @@ t('Init creates config, baseline, versions and prints cron lines', function () {
     assertSame(0, $r['exit'], implode("\n", $r['lines']));
     $out = implode("\n", $r['lines']);
     assertContains('profile wordpress', $out);
-    assertContains('*/10 * * * * php ' . $tool . '/sentinel.php check --config=' . $tool . '/sentinel.json', $out);
+    assertContains(Sentinel\Cron::lines($tool . '/sentinel.php', $tool . '/sentinel.json')[0], $out);
     assertContains(' full --config=', $out);
     assertContains('heartbeat', $out);
 

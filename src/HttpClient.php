@@ -72,16 +72,22 @@ final class NativeHttp implements HttpClient
             'follow_location' => 1,
             'max_redirects' => 3,
         ]]);
-        $resp = @file_get_contents($url, false, $ctx);
-        if ($resp === false) {
+        $fh = @fopen($url, 'rb', false, $ctx);
+        if ($fh === false) {
+            return ['status' => 0, 'body' => ''];
+        }
+        // Response headers come from the stream itself: the magic $http_response_header
+        // variable is not reliably set on PHP < 8.4 and is deprecated from PHP 8.5.
+        $meta = stream_get_meta_data($fh);
+        $resp = stream_get_contents($fh);
+        $timedOut = !empty(stream_get_meta_data($fh)['timed_out']);
+        fclose($fh);
+        if ($resp === false || $timedOut) {
             return ['status' => 0, 'body' => ''];
         }
         $status = 0;
-        // PHP 8.4+ deprecates the magic $http_response_header variable.
-        $responseHeaders = function_exists('http_get_last_response_headers')
-            ? (http_get_last_response_headers() ?? [])
-            : (get_defined_vars()['http_response_header'] ?? []);
-        foreach ($responseHeaders as $h) {
+        // With redirects followed, every response's headers are listed in order; the last status line wins.
+        foreach ((array)($meta['wrapper_data'] ?? []) as $h) {
             if (preg_match('#^HTTP/\S+\s+(\d{3})#', (string)$h, $m)) {
                 $status = (int)$m[1];
             }

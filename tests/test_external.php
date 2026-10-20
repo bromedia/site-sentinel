@@ -11,7 +11,10 @@ t('Proc::run captures output, exit code and stderr', function () {
     assertSame("out\n", $r['out']);
     assertSame("err\n", $r['err']);
     assertSame(false, $r['timed_out']);
-    assertSame(-1, Proc::run(['/nonexistent/binary'], 5)['exit']);
+    // PHP 7.4 can start a child that exits 127; newer PHP may fail proc_open itself.
+    $missing = Proc::run(['/nonexistent/binary'], 5);
+    assertTrue(in_array($missing['exit'], [-1, 127], true));
+    assertSame(false, $missing['timed_out']);
 });
 
 t('Proc::run kills a command that exceeds the timeout', function () {
