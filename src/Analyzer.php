@@ -47,7 +47,7 @@ final class Analyzer
      * @param array<string,string> $oldVersions stored plugin/theme versions
      * @param array<string,string> $newVersions versions currently on disk
      * @param int $now current unix time; with update_grace_seconds > 0, update-explainable findings for files that arrived within the grace period are deferred (held, not reported). 0 disables deferral
-     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, held_groups: array<string,bool>, notes: string[]}
+     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[]}
      */
     public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0): array
     {
@@ -59,8 +59,7 @@ final class Analyzer
         $groups = [];
         $queue = [];
         $queueHashes = [];
-        $recheckGaps = [];
-        $rechecked = [];
+        $versionHolds = [];
         $dismissed = 0;
         $official = 0;
         $removed = 0;
@@ -87,9 +86,6 @@ final class Analyzer
 
             $rec = $c['new'];
             $isNew = $c['type'] === 'new';
-            // An unchanged file queued for detection again (its dismissal was removed): detections
-            // only, never change findings, deferral or update grouping.
-            $recheck = $c['type'] === 'recheck';
             $hash = (string)$rec['hash'];
 
             if (($rec['mode'] & 0170000) === 0120000) {
@@ -103,26 +99,22 @@ final class Analyzer
                 continue;
             }
 
-            // A recheck runs every detection the file got when it arrived, including new-file-only
-            // ones (configuration or executables dropped into uploads or tmp); change findings stay off.
-            $hits = $this->locations->scan($rel, $rec, $isNew || $recheck);
+            $hits = $this->locations->scan($rel, $rec, $isNew);
             if ($this->config->isCodeFile($rel)) {
                 $hits = array_merge($hits, $this->patterns->scan($rel, $this->config->abs($rel), $hash));
             }
 
             $status = ($this->wp !== null && !$this->config->isUploads($rel)) ? $this->wp->verify($rel) : WpChecksum::UNKNOWN;
-            if ($recheck && $status === WpChecksum::UNKNOWN) {
-                $recheckGaps[$rel][] = 'checksums';
-            }
             if ($status === WpChecksum::VERIFIED) {
-                $official += $recheck ? 0 : 1;
+                $official++;
                 continue;
             }
             // An update copies many files over a few seconds; a scan that lands mid-copy must not call that tampering.
             // ctime, not mtime, because extracting an archive restores old mtimes. Scanner hits are never delayed.
-            $fresh = !$recheck && $grace > 0 && $now > 0 && ($now - max((int)$rec['mtime'], (int)($rec['ctime'] ?? 0))) < $grace;
+            $fresh = $grace > 0 && $now > 0 && ($now - max((int)$rec['mtime'], (int)($rec['ctime'] ?? 0))) < $grace;
             if ($fresh && !$hits && ($status === WpChecksum::MISMATCH || $status === WpChecksum::EXTRA) && !$c['stealth']) {
                 $hold[$rel] = true;
+                $versionHolds[self::groupOf($rel)] = true; // judged with this update on the next run
                 $deferred++;
                 continue;
             }
@@ -145,14 +137,6 @@ final class Analyzer
                 $hold[$rel] = true;
                 continue;
             }
-            if ($recheck) {
-                if ($this->config->isCodeFile($rel)) {
-                    $queue[$rel] = $this->config->abs($rel); // external scanners, without update grouping
-                    $queueHashes[$rel] = $hash;
-                    $rechecked[$rel] = true;
-                }
-                continue;
-            }
 
             if ($c['type'] === 'modified' && $c['content_same']) {
                 if (($rec['mode'] & 0002) !== 0 && (((int)($c['old']['mode'] ?? 0)) & 0002) === 0) {
@@ -171,6 +155,7 @@ final class Analyzer
             }
             if ($fresh) {
                 $hold[$rel] = true;
+                $versionHolds[self::groupOf($rel)] = true;
                 $deferred++;
                 continue;
             }
@@ -181,11 +166,6 @@ final class Analyzer
 
         if ($queue) {
             $externalHits = $this->external->scan($queue);
-            if (!$this->external->enabled() || $this->external->errors()) {
-                foreach (array_keys($rechecked) as $p) {
-                    $recheckGaps[(string)$p][] = 'external';
-                }
-            }
             foreach ($externalHits as $f) {
                 $f = new Finding($f->severity, $f->path, $f->rule, $f->message, $f->hash !== '' ? $f->hash : (string)($queueHashes[$f->path] ?? ''));
                 if (!$this->undismissed([$f], $dismissed)) {
@@ -217,6 +197,9 @@ final class Analyzer
             $sample = implode(', ', array_slice($names, 0, 5)) . (count($names) > 5 ? sprintf(' (+%d more)', count($names) - 5) : '');
             // Keyed on the changed files' contents, so any further change while this waits for review alerts again.
             $contentKey = sha1(implode(',', $names) . '|' . implode(',', array_values($files)));
+            if ($bumped) {
+                $versionHolds[$g] = true; // the update itself awaits review
+            }
             $findings[] = $bumped
                 ? new Finding(
                     Finding::WARNING,
@@ -244,7 +227,7 @@ final class Analyzer
             $crit = array_values(array_filter($findings, function (Finding $f) {
                 return $f->severity >= Finding::CRITICAL;
             }));
-            return ['findings' => $crit, 'info' => [], 'hold' => [], 'held_groups' => [], 'notes' => $notes, 'recheck_gaps' => $recheckGaps];
+            return ['findings' => $crit, 'info' => [], 'hold' => [], 'version_holds' => [], 'notes' => $notes];
         }
 
         if ($dismissed > 0) {
@@ -259,11 +242,10 @@ final class Analyzer
         if ($deferred > 0) {
             $info[] = sprintf('%d file(s) changed within the last %d seconds; they will be judged on the next run', $deferred, $grace);
         }
-        $heldGroups = [];
-        foreach (array_keys($hold) as $p) {
-            $heldGroups[self::groupOf((string)$p)] = true;
-        }
-        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes, 'recheck_gaps' => $recheckGaps];
+        // Only an update that is still waiting (for review, or for its copy to finish) keeps a
+        // plugin's or theme's stored version. A file held for its own finding does not: freezing
+        // the version then would let later edits pass as part of an update that was already done.
+        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'version_holds' => $versionHolds, 'notes' => $notes];
     }
 
     /**

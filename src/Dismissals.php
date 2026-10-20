@@ -22,8 +22,6 @@ final class Dismissals
 
     private const REASON_MAX = 500;
     private const UNTRUSTED = 'dismissals.json was changed outside the dismiss command.';
-    /** Files to analyse again although unchanged, because a dismissal covering them was removed. */
-    public const RECHECK_FILE = 'recheck.json';
 
     private $state;
     /** @var array[] */
@@ -120,7 +118,13 @@ final class Dismissals
         $matches = [];
         foreach ((new AlertLog($this->state))->entries() as $key => $e) {
             if (strpos((string)$key, $id) === 0 && isset($e['rule'], $e['path'], $e['hash'])) {
-                $matches[(string)$key] = $e;
+                // The alert log is not tamper-checked, so an entry counts only if its fields really
+                // produce its id: otherwise a forged entry could turn this id into a dismissal of
+                // some other file.
+                $f = new Finding(Finding::WARNING, (string)$e['path'], (string)$e['rule'], '', (string)$e['hash']);
+                if ($f->key() === (string)$key) {
+                    $matches[(string)$key] = $e;
+                }
             }
         }
         if (!$matches) {
@@ -182,19 +186,23 @@ final class Dismissals
         if (count($removed) > 1) {
             return self::fail("id $id is ambiguous; use more of its characters");
         }
-        $e = array_values($removed)[0];
-        // The file may have been accepted since it was dismissed, and scans only analyse changed
-        // files, so queue it for analysis first: if that write fails nothing has been removed yet,
-        // and the command can simply be retried.
-        self::queueRecheck($this->state, (string)$e['path'], (string)$e['rule'], (string)$e['sha256']);
+        $key = (string)array_keys($removed)[0];
+        $e = $removed[$key];
+        $path = (string)$e['path'];
+        // Scans only analyse files that changed, and this one may have been accepted since it was
+        // dismissed. Taking it out of the baseline makes the next scan treat it as a new file, so
+        // it gets every check a new file gets, and it stays out of the baseline until those
+        // checks have really run and it is reviewed again.
+        // Order matters: each step can fail, and until the last one the dismissal is still in
+        // place, so the command can simply be run again.
+        $baseline = $this->state->path('baseline.txt');
+        if (is_file($baseline)) {
+            Baseline::applyUpdates($baseline, [$path => null], $baseline);
+        }
+        (new AlertLog($this->state))->forget($key); // so it alerts again when next detected
         $this->entries = $keep;
         $this->save($selfFiles);
-        $log = new AlertLog($this->state);
-        foreach (array_keys($removed) as $key) {
-            $log->forget((string)$key); // so it alerts again when next detected
-        }
-        $e = array_values($removed)[0];
-        return ['exit' => 0, 'lines' => [sprintf('removed dismissal %s: %s on %s; it is analysed again from the next scan', substr(self::keyOf($e), 0, 12), $e['rule'], $e['path'])]];
+        return ['exit' => 0, 'lines' => [sprintf('removed dismissal %s: %s on %s; the next scan examines the file again as a new file', substr($key, 0, 12), $e['rule'], $path)]];
     }
 
     /** @return string[] */
@@ -218,43 +226,6 @@ final class Dismissals
             $lines[] = sprintf('    by %s on %s UTC: %s', (string)($e['by'] ?? '?'), gmdate('Y-m-d H:i', (int)($e['at'] ?? 0)), (string)($e['reason'] ?? ''));
         }
         return $lines;
-    }
-
-    /** @return array[] queued re-analysis entries: {path, rule, sha256} */
-    public static function recheckQueue(State $state): array
-    {
-        return array_values(array_filter((array)$state->readJson(self::RECHECK_FILE), function ($e) {
-            return is_array($e) && isset($e['path'], $e['rule'], $e['sha256']) && is_string($e['path']);
-        }));
-    }
-
-    public static function queueRecheck(State $state, string $path, string $rule, string $sha256): void
-    {
-        $queue = self::recheckQueue($state);
-        foreach ($queue as $e) {
-            if ($e['path'] === $path && $e['rule'] === $rule && $e['sha256'] === $sha256) {
-                return;
-            }
-        }
-        $queue[] = ['path' => $path, 'rule' => $rule, 'sha256' => $sha256];
-        $state->writeJson(self::RECHECK_FILE, $queue);
-    }
-
-    /**
-     * Whether a recheck of this rule actually ran. A check that could not run (scanner failed or
-     * unavailable, official checksums unreachable) must leave the entry pending, not count as clean.
-     *
-     * @param string[] $gaps what could not be checked for that file this run: 'external', 'checksums'
-     */
-    public static function recheckRan(string $rule, array $gaps): bool
-    {
-        if (strpos($rule, 'clamav:') === 0 || strpos($rule, 'yara:') === 0) {
-            return !in_array('external', $gaps, true);
-        }
-        if ($rule === 'checksum-mismatch' || $rule === 'unexpected-file') {
-            return !in_array('checksums', $gaps, true);
-        }
-        return true;
     }
 
     private function save(array $selfFiles): void

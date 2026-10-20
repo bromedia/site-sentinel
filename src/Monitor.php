@@ -108,8 +108,7 @@ final class Monitor
         $oldVersions = $this->state->readJson('versions.json');
         $newVersions = $wpOn ? VersionTracker::read($this->config) : [];
         $now = ($this->clock)();
-        $recheck = Dismissals::recheckQueue($this->state);
-        $a = $analyzer->analyze(array_merge($d['changes'], $this->recheckChanges(array_unique(array_column($recheck, 'path')), $d['changes'], $differ)), $oldVersions, $newVersions, false, $now);
+        $a = $analyzer->analyze($d['changes'], $oldVersions, $newVersions, false, $now);
 
         $findings = $a['findings'];
         foreach ($d['unreadable'] as $dir) {
@@ -144,16 +143,13 @@ final class Monitor
             if ($d['complete'] && $wpOn) {
                 $store = [];
                 foreach ($newVersions as $g => $v) {
-                    if (!isset($a['held_groups'][$g])) {
+                    if (!isset($a['version_holds'][$g])) {
                         $store[$g] = $v;
                     } elseif (isset($oldVersions[$g])) {
                         $store[$g] = $oldVersions[$g];
                     }
                 }
                 $this->state->writeJson('versions.json', $store);
-            }
-            if ($recheck) {
-                $this->state->writeJson(Dismissals::RECHECK_FILE, $this->pendingRechecks($recheck, $findings, (array)($a['recheck_gaps'] ?? []), $dismissals));
             }
         } catch (\Throwable $e) {
             $findings[] = new Finding(
@@ -225,83 +221,6 @@ final class Monitor
             }
         }
         return ['exit' => ($crit + $warn) > 0 ? 1 : 0, 'lines' => $lines];
-    }
-
-    /**
-     * Which queued rechecks stay pending. An entry is finished only when its file is gone, excluded
-     * or changed (a changed file is analysed as a change), when the same finding is dismissed again,
-     * or when the check really ran and the rule no longer fires. Still firing, or not checkable this
-     * run (scanner failure, checksums unreachable), keeps it.
-     *
-     * @param array[] $queue
-     * @param Finding[] $findings
-     * @param array<string,string[]> $gaps
-     * @return array[]
-     */
-    private function pendingRechecks(array $queue, array $findings, array $gaps, ?Dismissals $dismissals): array
-    {
-        $excluded = new PathFilter($this->config->exclusions());
-        $hashes = [];
-        $keep = [];
-        foreach ($queue as $e) {
-            $p = (string)$e['path'];
-            $abs = $this->config->abs($p);
-            if ($excluded->matches($p) || !is_file($abs) || is_link($abs)) {
-                continue;
-            }
-            $hashes[$p] = $hashes[$p] ?? (string)@hash_file('sha256', $abs);
-            if ($hashes[$p] !== $e['sha256']) {
-                continue;
-            }
-            if ($dismissals !== null && $dismissals->covers(new Finding(Finding::WARNING, $p, (string)$e['rule'], '', (string)$e['sha256']))) {
-                continue;
-            }
-            $firing = false;
-            foreach ($findings as $f) {
-                // The rule still fires, or the file could not be fully read or scanned this run.
-                if ($f->path === $p && ($f->rule === $e['rule'] || $f->rule === 'unreadable' || $f->rule === 'scan-error')) {
-                    $firing = true;
-                    break;
-                }
-            }
-            if ($firing || !Dismissals::recheckRan((string)$e['rule'], (array)($gaps[$p] ?? []))) {
-                $keep[] = $e;
-            }
-        }
-        return $keep;
-    }
-
-    /**
-     * Analysis entries for queued files that did not change this run (changed ones are already
-     * being analysed). They are checked for detections only and never written to the baseline.
-     *
-     * @param string[] $paths
-     * @param array[] $changes this run's changes
-     * @return array[]
-     */
-    private function recheckChanges(array $paths, array $changes, Differ $differ): array
-    {
-        if (!$paths) {
-            return [];
-        }
-        $seen = [];
-        foreach ($changes as $c) {
-            $seen[(string)$c['path']] = true;
-        }
-        $excluded = new PathFilter($this->config->exclusions());
-        $out = [];
-        foreach ($paths as $p) {
-            if (isset($seen[$p]) || $excluded->matches($p)) {
-                continue;
-            }
-            $st = @lstat($this->config->abs($p));
-            if ($st === false || ($st['mode'] & 0170000) !== 0100000) {
-                continue; // gone, or no longer a regular file
-            }
-            [$rec, $unreadable] = $differ->record(['path' => $p, 'size' => (int)$st['size'], 'mtime' => (int)$st['mtime'], 'ctime' => (int)$st['ctime'], 'mode' => (int)$st['mode'], 'hash' => '']);
-            $out[] = ['type' => 'recheck', 'path' => $p, 'old' => null, 'new' => $rec, 'stealth' => false, 'content_same' => true, 'unreadable' => $unreadable];
-        }
-        return $out;
     }
 
     private function failed(\Throwable $e): array

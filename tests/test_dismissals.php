@@ -96,7 +96,7 @@ t('dismiss --remove brings the finding back at the next scan', function () {
     sentinelCli($script, $config, ['dismiss', $id, '--reason=fixture']);
     assertNotContains('test-marker', sentinelCli($script, $config, ['check'])['text']);
     $before = substr_count((string)file_get_contents($alerts), 'test-marker');
-    assertContains('analysed again from the next scan', sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['text']);
+    assertContains('examines the file again as a new file', sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['text']);
     assertContains('test-marker', sentinelCli($script, $config, ['check'])['text']);
     assertSame($before + 1, substr_count((string)file_get_contents($alerts), 'test-marker'), 'and it is alerted again');
     assertContains('no dismissal has id', sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['text']);
@@ -174,7 +174,7 @@ t('An honest dismiss refuses to save over a dismissals file changed by hand (it 
     assertContains('not being applied', $list['text']);
 });
 
-t('Removing a dismissal brings the finding back even after the file was accepted, until it is dismissed again', function () {
+t('Removing a dismissal brings the finding back even after the file was accepted, until it is dismissed and accepted again', function () {
     [$script, $config, $alerts, $root, $stateDir] = dismissSite();
     putFile($root, 'evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
     $id = shownId(sentinelCli($script, $config, ['check']), 'evil.php', 'test-marker');
@@ -183,18 +183,19 @@ t('Removing a dismissal brings the finding back even after the file was accepted
     assertSame(0, sentinelCli($script, $config, ['check'])['exit'], 'dismissed and accepted: quiet');
     $before = substr_count((string)file_get_contents($alerts), 'test-marker');
 
-    $baseline = (string)file_get_contents($stateDir . '/baseline.txt');
     assertSame(0, sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['exit']);
+    assertNotContains('evil.php', (string)file_get_contents($stateDir . '/baseline.txt'), 'the file is examined again as a new file');
     $r = sentinelCli($script, $config, ['check']);
     assertSame(1, $r['exit']);
-    assertSame($baseline, (string)file_get_contents($stateDir . '/baseline.txt'), 're-analysis never writes the baseline');
     assertContains('test-marker', $r['text']);
     assertSame($before + 1, substr_count((string)file_get_contents($alerts), 'test-marker'), 'alerted again');
     assertContains('test-marker', sentinelCli($script, $config, ['check'])['text'], 'and it keeps being reported');
     assertContains('test-marker', sentinelCli($script, $config, ['full'])['text']);
+    assertNotContains('evil.php', (string)file_get_contents($stateDir . '/baseline.txt'), 'never baselined while it fires');
     assertSame(0, sentinelCli($script, $config, ['dismiss', $id, '--reason=reviewed again'])['exit']);
+    assertContains('unexplained-change', sentinelCli($script, $config, ['check'])['text'], 'like any new file, it needs accept again');
+    assertSame(0, sentinelCli($script, $config, ['accept', '--path=evil.php'])['exit']);
     assertSame(0, sentinelCli($script, $config, ['check'])['exit']);
-    assertSame([], json_decode((string)file_get_contents($stateDir . '/' . Dismissals::RECHECK_FILE), true), 'queue cleared');
 });
 
 t('dismiss waits for a running scan instead of racing it', function () {
@@ -212,18 +213,37 @@ t('dismiss waits for a running scan instead of racing it', function () {
     assertSame(0, sentinelCli($script, $config, ['dismiss', $id, '--reason=fixture'])['exit']);
 });
 
-t('A removed dismissal of a new-file-only detection (config in uploads) is detected again after accept', function () {
-    [$script, $config, , $root] = dismissSite(['uploads_dir' => 'uploads']);
-    putFile($root, 'uploads/.htaccess', "Options +ExecCGI\n");
-    $id = shownId(sentinelCli($script, $config, ['check']), 'uploads/.htaccess', 'config-in-uploads');
-    assertSame(0, sentinelCli($script, $config, ['dismiss', $id, '--reason=fixture'])['exit']);
-    assertSame(0, sentinelCli($script, $config, ['accept', '--path=uploads/.htaccess'])['exit']);
-    assertSame(0, sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['exit']);
-    assertContains('config-in-uploads', sentinelCli($script, $config, ['check'])['text']);
-    assertContains('config-in-uploads', sentinelCli($script, $config, ['full'])['text'], 'and it stays reported');
+t('A removed dismissal of a new-file-only detection is detected again after accept, even if the file was touched or chmod-ed', function () {
+    foreach (['untouched', 'touched', 'chmod'] as $case) {
+        [$script, $config, , $root] = dismissSite(['uploads_dir' => 'uploads']);
+        putFile($root, 'uploads/.htaccess', "Options +ExecCGI\n");
+        putFile($root, 'tmp/payload', "#!/bin/sh\necho hi\n");
+        chmod($root . '/tmp/payload', 0755);
+        $r = sentinelCli($script, $config, ['check']);
+        $ids = [shownId($r, 'uploads/.htaccess', 'config-in-uploads'), shownId($r, 'tmp/payload', 'exec-in-temp')];
+        foreach ($ids as $id) {
+            assertSame(0, sentinelCli($script, $config, ['dismiss', $id, '--reason=fixture'])['exit']);
+        }
+        assertSame(0, sentinelCli($script, $config, ['accept'])['exit']);
+        assertSame(0, sentinelCli($script, $config, ['check'])['exit'], $case);
+        foreach ($ids as $id) {
+            assertSame(0, sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['exit']);
+        }
+        if ($case === 'touched') {
+            touch($root . '/uploads/.htaccess', time() + 100); // e.g. a security plugin rewriting the same rules
+            touch($root . '/tmp/payload', time() + 100);
+        } elseif ($case === 'chmod') {
+            chmod($root . '/uploads/.htaccess', 0600);
+            chmod($root . '/tmp/payload', 0700);
+        }
+        $r = sentinelCli($script, $config, ['check']);
+        assertContains('config-in-uploads', $r['text'], $case);
+        assertContains('exec-in-temp', $r['text'], $case);
+        assertContains('config-in-uploads', sentinelCli($script, $config, ['full'])['text'], "$case: and it stays reported");
+    }
 });
 
-t('A recheck that could not run (scanner failure) stays pending and reports once the scanner works', function () {
+t('A removed external-scanner dismissal waits for the scanner: a failed run is not a clean run', function () {
     if (!Sentinel\Proc::available()) {
         skip('needs proc_open');
     }
@@ -237,35 +257,64 @@ t('A recheck that could not run (scanner failure) stays pending and reports once
     sentinelCli($script, $config, ['dismiss', '--remove=' . $id]);
 
     touch($flag);
-    $broken = sentinelCli($script, $config, ['check']);
-    assertNotContains('clamav:Php', $broken['text']);
-    assertSame(1, count(Dismissals::recheckQueue(new Sentinel\State($stateDir))), 'a failed check is not a clean check');
+    for ($i = 0; $i < 2; $i++) {
+        $broken = sentinelCli($script, $config, ['check']);
+        assertNotContains('clamav:Php', $broken['text']);
+        assertNotContains('lib/flagged.php', (string)file_get_contents($stateDir . '/baseline.txt'), 'a failed check is not a clean check');
+    }
     unlink($flag);
     assertContains('clamav:Php.Heur.Test', sentinelCli($script, $config, ['check'])['text']);
 });
 
-t('dismiss --remove keeps the dismissal when queueing the recheck fails, so it can be retried', function () {
-    [$script, $config, , $root, $stateDir] = dismissSite();
-    putFile($root, 'evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
-    $id = shownId(sentinelCli($script, $config, ['check']), 'evil.php', 'test-marker');
-    sentinelCli($script, $config, ['dismiss', $id, '--reason=fixture']);
-    sentinelCli($script, $config, ['accept', '--path=evil.php']);
-    mkdir($stateDir . '/' . Dismissals::RECHECK_FILE); // the queue cannot be written
-    set_error_handler(function () { return true; });
-    try {
-        $rm = sentinelCli($script, $config, ['dismiss', '--remove=' . $id]);
-    } finally {
-        restore_error_handler();
+t('A removed external-scanner dismissal comes back even when another detection fired on the file first', function () {
+    if (!Sentinel\Proc::available()) {
+        skip('needs proc_open');
     }
-    rmdir($stateDir . '/' . Dismissals::RECHECK_FILE);
-    assertSame(2, $rm['exit']);
-    assertContains($id, sentinelCli($script, $config, ['dismiss', '--list'])['text'], 'nothing was removed');
-    assertSame(0, sentinelCli($script, $config, ['check'])['exit'], 'still dismissed meanwhile');
-    assertSame(0, sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['exit'], 'a retry works');
-    assertContains('test-marker', sentinelCli($script, $config, ['check'])['text']);
+    $clam = fakeTool(tmpdir(), 'clamscan', 'st=0; for f in "$@"; do case "$f" in *flagged*) echo "$f: Php.Heur.Test FOUND"; st=1;; esac; done; exit $st' . "\n");
+    [$script, $config, , $root] = dismissSite(['clamscan_path' => $clam]);
+    putFile($root, 'lib/flagged.php', '<?php eval(base64_decode("ZWNobyAnb2snOw=="));');
+    $r = sentinelCli($script, $config, ['check']);
+    $pattern = shownId($r, 'lib/flagged.php', 'eval-decoder');
+    sentinelCli($script, $config, ['dismiss', $pattern, '--reason=fixture']);
+    $clamId = shownId(sentinelCli($script, $config, ['check']), 'lib/flagged.php', 'clamav:Php.Heur.Test');
+    sentinelCli($script, $config, ['dismiss', $clamId, '--reason=fixture']);
+    sentinelCli($script, $config, ['accept', '--path=lib/flagged.php']);
+    assertSame(0, sentinelCli($script, $config, ['check'])['exit']);
+
+    // Both removed: the pattern fires first, so ClamAV does not run on the file this time...
+    sentinelCli($script, $config, ['dismiss', '--remove=' . $pattern]);
+    sentinelCli($script, $config, ['dismiss', '--remove=' . $clamId]);
+    $r = sentinelCli($script, $config, ['check']);
+    assertContains('eval-decoder', $r['text']);
+    // ...but its finding is not lost: once the pattern hit is dismissed again, ClamAV's comes back.
+    sentinelCli($script, $config, ['dismiss', $pattern, '--reason=reviewed again']);
+    assertContains('clamav:Php.Heur.Test', sentinelCli($script, $config, ['check'])['text']);
+    assertContains('clamav:Php.Heur.Test', sentinelCli($script, $config, ['check'])['text'], 'and it keeps being reported');
 });
 
-t('A queued recheck whose file could not be fully scanned this run stays pending', function () {
+t('dismiss --remove keeps the dismissal when a step fails, so it can simply be retried', function () {
+    foreach (['baseline.txt.tmp', 'alerts.json.tmp'] as $blocker) {
+        [$script, $config, , $root, $stateDir] = dismissSite();
+        putFile($root, 'evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+        $id = shownId(sentinelCli($script, $config, ['check']), 'evil.php', 'test-marker');
+        sentinelCli($script, $config, ['dismiss', $id, '--reason=fixture']);
+        sentinelCli($script, $config, ['accept', '--path=evil.php']);
+        mkdir($stateDir . '/' . $blocker); // this write now fails
+        set_error_handler(function () { return true; });
+        try {
+            $rm = sentinelCli($script, $config, ['dismiss', '--remove=' . $id]);
+        } finally {
+            restore_error_handler();
+        }
+        rmdir($stateDir . '/' . $blocker);
+        assertSame(2, $rm['exit'], $blocker);
+        assertContains($id, sentinelCli($script, $config, ['dismiss', '--list'])['text'], "$blocker: the dismissal is still there");
+        assertSame(0, sentinelCli($script, $config, ['dismiss', '--remove=' . $id])['exit'], "$blocker: a retry works");
+        assertContains('test-marker', sentinelCli($script, $config, ['check'])['text'], $blocker);
+    }
+});
+
+t('A removed dismissal whose file could not be fully scanned stays out of the baseline until it can be', function () {
     [$script, $config, , $root, $stateDir] = dismissSite();
     // A trusted rules bundle with a rule that backtracks, so it can be made to fail on demand.
     file_put_contents($stateDir . '/rules.json', json_encode(['version' => 1, 'patterns' => [
@@ -288,6 +337,42 @@ t('A queued recheck whose file could not be fully scanned this run stays pending
     }
     assertContains('scan-error', $r['text'], 'the rule could not be evaluated this run');
     assertNotContains('slow-rule [id', $r['text']);
-    assertSame(1, count(Dismissals::recheckQueue(new Sentinel\State($stateDir))), 'an incomplete scan is not a clean one');
+    assertNotContains('evil.php', (string)file_get_contents($stateDir . '/baseline.txt'), 'an incomplete scan is not a clean one');
     assertContains('slow-rule', sentinelCli($script, $config, ['check'])['text']);
+});
+
+t('dismiss ignores an alert-log entry whose fields do not match its id (a forged entry cannot redirect a dismissal)', function () {
+    [$script, $config, , $root, $stateDir] = dismissSite();
+    putFile($root, 'lib/licence.php', '<?php eval(base64_decode("ZWNobyAnb2snOw=="));');
+    $r = sentinelCli($script, $config, ['check']);
+    $id = shownId($r, 'lib/licence.php', 'eval-decoder');
+    putFile($root, 'shell.php', '<?php eval($_POST["x"]);');
+    $log = json_decode((string)file_get_contents($stateDir . '/alerts.json'), true);
+    foreach ($log as $key => $e) {
+        if (strpos((string)$key, $id) === 0) {
+            $log[$key] = array_merge($e, ['rule' => 'eval-request', 'path' => 'shell.php', 'hash' => hash_file('sha256', $root . '/shell.php')]);
+        }
+    }
+    file_put_contents($stateDir . '/alerts.json', json_encode($log));
+    $d = sentinelCli($script, $config, ['dismiss', $id, '--reason=honest review of the licence file']);
+    assertSame(2, $d['exit']);
+    assertContains('no reported finding has id', $d['text']);
+    assertContains('no dismissed findings', sentinelCli($script, $config, ['dismiss', '--list'])['text']);
+});
+
+t('A lost self-check record trusts nothing: a forged dismissals file is still ignored and reported', function () {
+    [$script, $config, , $root, $stateDir] = dismissSite();
+    putFile($root, 'shell.php', '<?php eval($_POST["x"]);');
+    file_put_contents($stateDir . '/' . Dismissals::FILE, json_encode(['dismissals' => [
+        ['rule' => 'eval-request', 'path' => 'shell.php', 'sha256' => hash_file('sha256', $root . '/shell.php'), 'reason' => 'x'],
+    ]]));
+    unlink($stateDir . '/selfcheck.json');
+    for ($i = 0; $i < 2; $i++) {
+        $r = sentinelCli($script, $config, ['check']);
+        assertContains('eval-request', $r['text'], 'the forged dismissal is not applied');
+        assertContains('self-tamper', $r['text']);
+    }
+    $a = sentinelCli($script, $config, ['accept', '--self']);
+    assertContains('dismissals (', $a['text'], 'accept --self says what it now trusts');
+    assertContains('appeared', $a['text']);
 });

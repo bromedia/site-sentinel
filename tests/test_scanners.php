@@ -185,3 +185,17 @@ t('PatternScanner reports a rule that failed to run instead of treating the file
     $ok = putFile($root, 'b.php', '<?php echo 1;');
     assertSame([], (new PatternScanner($rules, 1048576))->scan('b.php', $ok, ''));
 });
+
+t('ExternalScanner says when a configured scanner cannot run, instead of going quiet', function () {
+    $root = tmpdir();
+    $c = makeConfig($root, ['yara_rules' => $root . '/missing.yar', 'clamscan_path' => $root . '/no-clamscan']);
+    $x = Sentinel\ExternalScanner::fromConfig($c);
+    $x->scan(['a.php' => $root . '/a.php']);
+    $errors = implode("\n", $x->errors());
+    assertContains('ClamAV scanning skipped', $errors);
+    assertContains('YARA scanning skipped', $errors);
+    // Merely having yara installed, with nothing configured, is not a problem worth reporting.
+    $quiet = Sentinel\ExternalScanner::fromConfig(makeConfig($root));
+    $quiet->scan(['a.php' => $root . '/a.php']);
+    assertNotContains('skipped', implode("\n", $quiet->errors()));
+});

@@ -74,13 +74,27 @@ t('AlertLog alerts once, reminds Critical findings, retries failed sends and for
     assertSame([$warn], (new AlertLog($state))->due([$warn], 5, $day));
 });
 
-t('SelfCheck records on first use, then flags changed or missing tool files', function () {
+t('SelfCheck never re-trusts on its own when its record is lost, and flags changed or missing tool files', function () {
     $dir = tmpdir();
     $state = new State($dir . '/state');
     $script = putFile($dir, 'sentinel.php', '<?php // v1');
     $config = putFile($dir, 'sentinel.json', '{}');
     $files = ['script' => $script, 'config' => $config, 'rules' => $state->path('rules.json')];
     $sc = new SelfCheck($state, $files);
+    // init records the files; a record that is missing later (deleted, or unreadable) is reported,
+    // and nothing is trusted until accept --self, so a forged rules or dismissals file cannot ride along.
+    foreach (['missing' => null, 'corrupt' => 'not json'] as $case => $content) {
+        if ($content !== null) {
+            file_put_contents($state->path('selfcheck.json'), $content);
+        }
+        $f = $sc->check();
+        assertSame(1, count($f), $case);
+        assertSame(Finding::CRITICAL, $f[0]->severity);
+        assertContains('selfcheck.json', $f[0]->message);
+        assertSame(['script', 'config'], $sc->untrusted(), $case);
+        assertSame(1, count($sc->check()), "$case: still not re-recorded");
+    }
+    $sc->record(); // init, or accept --self
     assertSame([], $sc->check());
     assertSame([], $sc->check());
 

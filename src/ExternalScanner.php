@@ -14,10 +14,14 @@ final class ExternalScanner
     /** @var string[] */
     private $errors = [];
     private $disabledNote;
+    /** @var string[] configured scanners that cannot run, reported with every scan */
+    private $unavailable;
 
-    public function __construct(?string $clamscan, ?string $yara, ?string $yaraRules, ?string $disabledNote = null)
+    /** @param string[] $unavailable */
+    public function __construct(?string $clamscan, ?string $yara, ?string $yaraRules, ?string $disabledNote = null, array $unavailable = [])
     {
         $this->disabledNote = $disabledNote;
+        $this->unavailable = $unavailable;
         $this->clamscan = $clamscan;
         $this->yara = $yara !== null && $yaraRules !== null && $yaraRules !== '' ? $yara : null;
         $this->yaraRules = $yaraRules;
@@ -27,16 +31,31 @@ final class ExternalScanner
     {
         $clam = $c->clamscanPath !== '' ? $c->clamscanPath : self::find('clamscan');
         $yara = $c->yaraPath !== '' ? $c->yaraPath : self::find('yara');
+        // A scanner the config asks for but that cannot run is said so on every scan; otherwise its
+        // findings would simply stop, which looks exactly like a clean result.
+        $unavailable = [];
         if ($clam !== null && !is_executable($clam)) {
             $clam = null;
         }
-        if ($yara !== null && (!is_executable($yara) || $c->yaraRules === '' || !is_file($c->yaraRules))) {
+        if ($clam === null && $c->clamscanPath !== '') {
+            $unavailable[] = "clamscan_path is set but {$c->clamscanPath} cannot be run; ClamAV scanning skipped";
+        }
+        $yaraWanted = $c->yaraPath !== '' || $c->yaraRules !== '';
+        if ($yara === null || !is_executable($yara)) {
+            if ($yaraWanted) {
+                $unavailable[] = 'YARA is configured but its program ' . ($c->yaraPath !== '' ? $c->yaraPath : '(yara, not found on PATH)') . ' cannot be run; YARA scanning skipped';
+            }
+            $yara = null;
+        } elseif ($c->yaraRules === '' || !is_file($c->yaraRules)) {
+            if ($yaraWanted) {
+                $unavailable[] = 'YARA is configured but its rules file ' . ($c->yaraRules !== '' ? $c->yaraRules : '(yara_rules is not set)') . ' is missing; YARA scanning skipped';
+            }
             $yara = null;
         }
         if (($clam !== null || $yara !== null) && !Proc::available()) {
-            return new ExternalScanner(null, null, null, 'ClamAV/YARA found but proc_open is disabled on this host; external scanning skipped');
+            return new ExternalScanner(null, null, null, 'ClamAV/YARA found but proc_open is disabled on this host; external scanning skipped', $unavailable);
         }
-        return new ExternalScanner($clam, $yara, $c->yaraRules);
+        return new ExternalScanner($clam, $yara, $c->yaraRules, null, $unavailable);
     }
 
     public static function find(string $bin): ?string
@@ -67,7 +86,7 @@ final class ExternalScanner
      */
     public function scan(array $files): array
     {
-        $this->errors = [];
+        $this->errors = $files ? $this->unavailable : [];
         if (!$files || !$this->enabled()) {
             if ($files && $this->disabledNote !== null) {
                 $this->errors[] = $this->disabledNote;

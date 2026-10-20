@@ -28,12 +28,29 @@ final class SelfCheck
     public function check(): array
     {
         $stored = $this->state->readJson('selfcheck.json');
-        if ($stored === []) {
-            $this->record();
+        $this->untrusted = [];
+        if (!$this->files) {
             return [];
         }
+        if ($stored === []) {
+            // Written at setup and only rewritten by Sentinel, so on an installed site an empty
+            // or unreadable record means it was lost or tampered with. Re-recording it here would
+            // trust whatever rules or dismissals file sits next to it, so nothing is trusted until
+            // someone reviews the files and runs accept --self.
+            foreach ($this->files as $label => $path) {
+                if (self::hashOf($path) !== '') {
+                    $this->untrusted[] = (string)$label;
+                }
+            }
+            return [new Finding(
+                Finding::CRITICAL,
+                'sentinel',
+                'self-tamper',
+                "Sentinel's record of its own files (selfcheck.json) is missing or unreadable, so its rules and dismissals are not trusted; review them, then run accept --self",
+                sha1('selfcheck-missing|' . implode(',', array_map([self::class, 'hashOf'], array_values($this->files))))
+            )];
+        }
         $out = [];
-        $this->untrusted = [];
         foreach ($this->files as $label => $path) {
             $was = (string)($stored[$label] ?? '');
             $now = self::hashOf($path);
@@ -71,6 +88,25 @@ final class SelfCheck
     public function untrusted(): array
     {
         return $this->untrusted;
+    }
+
+    /**
+     * What has changed since the files were last trusted, without recording anything.
+     *
+     * @return array<string,string> label => 'changed' | 'appeared' | 'missing'
+     */
+    public function changes(): array
+    {
+        $stored = $this->state->readJson('selfcheck.json');
+        $out = [];
+        foreach ($this->files as $label => $path) {
+            $was = (string)($stored[$label] ?? '');
+            $now = self::hashOf($path);
+            if ($now !== $was) {
+                $out[(string)$label] = $was === '' ? 'appeared' : ($now === '' ? 'missing' : 'changed');
+            }
+        }
+        return $out;
     }
 
     /** Trusts the current state of every tracked file (accept --self, init). */

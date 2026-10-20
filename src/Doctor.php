@@ -65,6 +65,11 @@ final class Doctor
         $dismissed = is_readable($c->stateDir . '/' . Dismissals::FILE) ? json_decode((string)file_get_contents($c->stateDir . '/' . Dismissals::FILE), true) : [];
         $n = is_array($dismissed) ? count((array)($dismissed['dismissals'] ?? [])) : 0;
         $lines[] = $n > 0 ? $n . ' dismissed finding(s); review them with: php sentinel.php dismiss --list' : 'No dismissed findings.';
+        $record = is_readable($c->stateDir . '/selfcheck.json') ? json_decode((string)file_get_contents($c->stateDir . '/selfcheck.json'), true) : [];
+        $dfile = $c->stateDir . '/' . Dismissals::FILE;
+        if ($n > 0 && (!is_array($record) || (string)@hash_file('sha256', $dfile) !== (string)($record['dismissals'] ?? ''))) {
+            $add(1, 'dismissals.json was changed outside the dismiss command, so its entries are not applied; review them with dismiss --list');
+        }
 
         $file = $c->stateDir . '/status.json';
         $status = is_readable($file) ? json_decode((string)file_get_contents($file), true) : [];

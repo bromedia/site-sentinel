@@ -20,6 +20,7 @@ function monitorFixture(array $files = [], array $cfg = [], array $self = []): a
     $config = makeConfig($root, $cfg);
     $state = new State($config->stateDir);
     snapshot($config, $state->path('baseline.txt'));
+    (new \Sentinel\SelfCheck($state, $self))->record(); // as init does
     $notifier = new FakeNotifier();
     $http = new FakeHttp();
     $clock = new FakeClock();
@@ -263,6 +264,25 @@ t('Monitor: a held plugin group keeps its old stored version', function () {
     bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
     assertSame(1, $m->run('check')['exit']);
     assertSame(['wp-content/plugins/foo' => '1.0'], $state->readJson('versions.json'));
+});
+
+t('Monitor: with auto-accept, a file held for its own finding does not freeze the plugin version, so later quiet edits still alert', function () {
+    $files = [
+        'wp-config.php' => '<?php',
+        'wp-content/plugins/foo/foo.php' => "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// v1\n",
+        'wp-content/plugins/foo/inc/helper.php' => "<?php // helper v1\n",
+    ];
+    [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false, 'auto_accept_unverified_updates' => true]);
+    $state->writeJson('versions.json', VersionTracker::read($config));
+    putFile($root, 'wp-content/plugins/foo/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER'); // stays held, alerting
+    bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(['wp-content/plugins/foo' => '1.1'], $state->readJson('versions.json'), 'the accepted update is recorded');
+
+    // A later edit with no version change is not part of that update.
+    bump($root, 'wp-content/plugins/foo/inc/helper.php', "<?php // helper, quietly edited\n");
+    $m->run('check');
+    assertContains('unexplained-change', $n->sent[count($n->sent) - 1]['body']);
 });
 
 t('Monitor: an unreadable directory is reported', function () {
