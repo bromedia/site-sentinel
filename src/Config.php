@@ -31,6 +31,8 @@ final class Config
     public $remindHours = 24;
     public $updateGraceSeconds = 120;
     public $wpChecksums = true;
+    /** Accept plugin/theme version bumps whose files cannot be verified against an official source (legacy behaviour). */
+    public $autoAcceptUnverifiedUpdates = false;
     public $heartbeatUrl = '';
     public $rulesUrl = '';
     public $rulesPublicKey = '';
@@ -94,6 +96,7 @@ final class Config
         $c->remindHours = self::int($raw, 'remind_hours', 24);
         $c->updateGraceSeconds = self::int($raw, 'update_grace_seconds', 120, 0);
         $c->wpChecksums = (bool)($raw['wp_checksums'] ?? true);
+        $c->autoAcceptUnverifiedUpdates = (bool)($raw['auto_accept_unverified_updates'] ?? false);
         $c->heartbeatUrl = self::url($raw, 'heartbeat_url');
         $c->rulesUrl = self::url($raw, 'rules_url');
         $c->rulesPublicKey = trim((string)($raw['rules_public_key'] ?? ''));
@@ -124,6 +127,7 @@ final class Config
             'remind_hours' => $this->remindHours,
             'update_grace_seconds' => $this->updateGraceSeconds,
             'wp_checksums' => $this->wpChecksums,
+            'auto_accept_unverified_updates' => $this->autoAcceptUnverifiedUpdates,
             'heartbeat_url' => $this->heartbeatUrl,
             'rules_url' => $this->rulesUrl,
             'rules_public_key' => $this->rulesPublicKey,

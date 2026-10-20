@@ -47,7 +47,7 @@ For `doctor`, these mean `0` no local issues detected, `1` configuration warning
 
 - **Critical:** known malware patterns or hashes (built in, plus anything from ClamAV/YARA if installed), PHP files in `wp-content/uploads` (including `shell.php.jpg`), PHP code hidden inside images, a WordPress core or repository-plugin file that does not match wordpress.org's official checksum, an executable newly created in a `tmp` directory, content changed while size and timestamp were left alone, and any change to Sentinel's own files.
 - **Warning:** new or modified code that is not explained by an update, a PHP extension hidden before another one anywhere (`evil.php.jpg`), changes to `wp-config.php`, `.htaccess` or `mu-plugins`, new symlinks, files that became world-writable, removed core files.
-- **Info:** things that were explained and accepted automatically (a plugin updated from 1.0 to 1.1, files verified against official checksums). Info appears in the next alert that is sent anyway; it never sends one by itself.
+- **Info:** things that were explained and accepted automatically (files verified against official checksums, a repository plugin updated to a published version). Info appears in the next alert that is sent anyway; it never sends one by itself.
 
 Each problem alerts once, and Critical problems remind you every `remind_hours` (default 24) until fixed or accepted. Held changes stay out of the baseline, so they keep showing in `check` output until you run `accept`.
 
@@ -55,7 +55,7 @@ Each problem alerts once, and Critical problems remind you every `remind_hours` 
 
 ### WordPress updates
 
-Core and repository plugins are verified against wordpress.org checksums, so updates are recognised without help. Premium or custom plugins and themes are grouped by directory: a version bump with clean files is a quiet Info line; changes without a version change are one Warning per plugin. For other sites (`generic` profile) changes are Warnings until you `accept`; run `php sentinel.php accept` after each deploy, for example as the last line of your deploy script.
+Core and repository plugins are verified against wordpress.org checksums, so updates are recognised without help. Premium or custom plugins and themes have no official checksums, and a version number proves nothing (whoever can edit the files can edit the `Version:` header). So their changes are one Warning per plugin or theme, held until you review and accept that directory, for example `php sentinel.php accept --path=wp-content/plugins/foo`: `unverified-update` when the version changed, `unexplained-change` when it did not. Any further change while one is waiting alerts again. The same applies to a repository plugin whose new version wordpress.org has not published. If you would rather have premium updates accepted quietly, set `auto_accept_unverified_updates` to `true`. A plugin is only treated as premium when wordpress.org confirms it does not host it: a repository plugin bumped to an unpublished version, or any plugin while wordpress.org cannot be reached, still raises a Warning. For other sites (`generic` profile) changes are Warnings until you `accept`; run `php sentinel.php accept` after each deploy, for example as the last line of your deploy script.
 
 ## Configuration
 
@@ -73,6 +73,7 @@ Core and repository plugins are verified against wordpress.org checksums, so upd
 | `update_grace_seconds` | Files that arrived in the last N seconds (default 120) get no checksum-mismatch or unexplained-change finding yet; they are judged on the next run. This stops a scan that lands in the middle of a WordPress update from raising a false alarm. Malware pattern hits, PHP in uploads and `wp-config.php`/`.htaccess` changes are never delayed. `0` disables it. |
 | `max_scan_bytes` | For files larger than this, the first and last half are scanned (malware is often appended). |
 | `wp_checksums` | Set `false` to stop contacting wordpress.org. |
+| `auto_accept_unverified_updates` | Default `false`. `true` accepts a premium plugin or theme update on its version change alone, as earlier releases did. Never applies to a wordpress.org plugin bumped to a version wordpress.org has not published, nor while wordpress.org cannot be reached to confirm a plugin is not hosted there. That safeguard needs `wp_checksums`: with it off, nothing is looked up and every version bump is auto-accepted. |
 | `heartbeat_url` | URL pinged after each completed run. |
 | `clamscan_path`, `yara_path`, `yara_rules` | Optional external scanners; found on `PATH` automatically (YARA also needs `yara_rules`). |
 | `rules_url`, `rules_public_key`, `allow_unsigned_rules` | See [docs/RULES.md](docs/RULES.md). |

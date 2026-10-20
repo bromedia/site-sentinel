@@ -10,6 +10,11 @@ final class WpChecksum
     public const EXTRA = 'extra';
     public const UNKNOWN = 'unknown';
 
+    /** Outcomes of asking wordpress.org about a plugin release. */
+    public const RELEASE_PUBLISHED = 'published';
+    public const RELEASE_ABSENT = 'absent';
+    public const RELEASE_UNAVAILABLE = 'unavailable';
+
     private $http;
     private $config;
     private $cacheDir;
@@ -20,6 +25,8 @@ final class WpChecksum
     private $core = null;
     /** @var array<string,?array> */
     private $plugins = [];
+    /** @var array<string,string> slug@version => RELEASE_* */
+    private $releases = [];
 
     public function __construct(HttpClient $http, Config $config, string $cacheDir)
     {
@@ -61,6 +68,21 @@ final class WpChecksum
             return self::EXTRA;
         }
         return self::UNKNOWN;
+    }
+
+    /**
+     * Whether wordpress.org publishes checksums for this plugin release. RELEASE_ABSENT
+     * only on a definite "not found" (a premium or custom plugin, or an unpublished
+     * version); RELEASE_UNAVAILABLE when the answer could not be obtained (network
+     * error, server error, unexpected response, or a name the API cannot be asked about).
+     */
+    public function releaseStatus(string $slug, string $version): string
+    {
+        if (!preg_match('/^[A-Za-z0-9._-]+$/', $slug) || !preg_match('/^[A-Za-z0-9._+-]+$/', $version)) {
+            return self::RELEASE_UNAVAILABLE;
+        }
+        $this->pluginMap($slug, $version);
+        return $this->releases[$slug . '@' . $version] ?? self::RELEASE_UNAVAILABLE;
     }
 
     private function verifyPlugin(string $rel, string $abs): string
@@ -142,12 +164,14 @@ final class WpChecksum
             return $this->plugins[$key];
         }
         $this->plugins[$key] = null;
+        $this->releases[$key] = self::RELEASE_UNAVAILABLE;
         $cache = $this->cacheFile('wp-plugin-' . $slug . '-' . $version . '.json');
         $map = $this->readCache($cache);
         if ($map === null) {
             $r = $this->http->request('GET', 'https://downloads.wordpress.org/plugin-checksums/' . rawurlencode($slug) . '/' . rawurlencode($version) . '.json');
             if ($r['status'] === 404) {
-                return null; // not in the repository: premium or custom plugin
+                $this->releases[$key] = self::RELEASE_ABSENT;
+                return null; // not in the repository: premium or custom plugin, or an unpublished version
             }
             if ($r['status'] !== 200) {
                 $this->note("Checksums for plugin '$slug' unavailable (" . $this->why($r['status']) . '); verification skipped');
@@ -174,6 +198,7 @@ final class WpChecksum
             $this->writeCache($cache, $map);
         }
         $this->plugins[$key] = $map;
+        $this->releases[$key] = self::RELEASE_PUBLISHED;
         return $map;
     }
 

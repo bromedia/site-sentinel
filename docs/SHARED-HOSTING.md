@@ -53,7 +53,7 @@ The printed schedule is every ten minutes for `check` and 03:17 nightly for `ful
 - A partial scan resumes when the same command runs again. If `full` is partial and scheduled only nightly, the next slice will be the following night. Run `full` again manually or adjust its schedule to complete coverage in an acceptable time. A ten-minute `check` does not resume `full`.
 - `doctor` distinguishes each mode's last processed run from its last complete traversal. Complete traversal does not imply zero findings or successful verification of every file. Older installations have no history until they run the upgraded monitor.
 - Rule updates are optional and require your own configured rules URL/key; no maintained external feed is configured by default. New rules apply to files as they are added or changed; they do not rescan files already in the baseline.
-- Verified WordPress.org updates are recognised automatically. Premium/custom update recognition uses a version change plus no scanner findings; it is not an authenticity guarantee. Keep an eye on those updates.
+- Verified WordPress.org updates are recognised automatically. Premium/custom plugin and theme updates raise an `unverified-update` Warning, because nothing official vouches for their files. After checking that you (or auto-updates) installed it, accept just that directory with `accept --path=...`. Sites with many premium updates can set `auto_accept_unverified_updates` to `true`, at the cost of trusting the version header.
 
 After reviewing your own development changes, accept the smallest relevant path, for example:
 

@@ -13,6 +13,7 @@
     "rules_public_key": "",
     "allow_unsigned_rules": false,
     "wp_checksums": true,
+    "auto_accept_unverified_updates": false,
     "budget_seconds": 50,
     "remind_hours": 24
 }

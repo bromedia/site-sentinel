@@ -14,6 +14,7 @@ final class Digest
         'unexpected-file' => 'This file is not in the official package. If you did not add it, inspect and remove it.',
         'stealth-modification' => 'Someone changed the content and reset the timestamp. Inspect the file and restore it from a clean copy.',
         'unexplained-change' => 'If you did not just deploy or update this, review the files. If you did, run: php sentinel.php accept',
+        'unverified-update' => 'The version number changed, but nothing official vouches for the new files (a premium plugin or theme, or a version wordpress.org has not published). If you or auto-updates installed it, run: php sentinel.php accept --path=<the directory shown>. If not, treat it as a compromise.',
         'sensitive-file-changed' => 'Review the change. If it was intentional, run: php sentinel.php accept --path=<file>',
         'sensitive-file-removed' => 'Restore the file from a backup if the removal was not intentional.',
         'core-file-removed' => 'Reinstall WordPress core files (wp core download --force --skip-content) if the removal was not intentional.',

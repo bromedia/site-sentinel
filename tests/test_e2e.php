@@ -117,11 +117,14 @@ t('end to end: a WordPress site with the tool installed inside the web root', fu
     unlink($site . '/wp-content/plugins/foo/evil.php');
     assertSame(0, sentinel($dist, array_merge(['check'], $cfg))['exit']);
 
-    // A real plugin update (version bump) is silent.
-    $before = (string)file_get_contents($alerts);
+    // A version bump that nothing official vouches for is a Warning until the owner accepts that plugin.
     bump($site, 'wp-content/plugins/foo/foo.php', plugin('1.1', 'v2'));
     $r = sentinel($dist, array_merge(['check'], $cfg));
-    assertSame(0, $r['exit'], $r['out'] . $r['err']);
+    assertSame(1, $r['exit'], $r['out'] . $r['err']);
+    assertContains('unverified-update', (string)file_get_contents($alerts));
+    assertSame(0, sentinel($dist, array_merge(['accept', '--path=wp-content/plugins/foo'], $cfg))['exit']);
+    $before = (string)file_get_contents($alerts);
+    assertSame(0, sentinel($dist, array_merge(['check'], $cfg))['exit']);
     assertSame($before, (string)file_get_contents($alerts));
 
     // A quiet edit without a version change is a Warning; accept clears it.

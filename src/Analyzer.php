@@ -169,19 +169,32 @@ final class Analyzer
             }
             $old = $oldVersions[$g] ?? null;
             $new = $newVersions[$g] ?? null;
-            if ($old !== null && $new !== null && $old !== $new) {
-                $info[] = sprintf('%s updated %s -> %s (%d file(s))', $g, $old, $new, count($files));
+            // Files reach this point only if no official checksum vouched for them, so a version
+            // bump alone proves nothing: anyone who can edit the files can edit the Version header.
+            $bumped = $old !== null && $new !== null && $old !== $new;
+            if ($bumped && $this->config->autoAcceptUnverifiedUpdates && $this->confirmedNotRepositoryPlugin($g, $old)) {
+                $info[] = sprintf('%s updated %s -> %s (%d file(s), not verified)', $g, $old, $new, count($files));
                 continue;
             }
             $names = array_map('strval', array_keys($files));
             $sample = implode(', ', array_slice($names, 0, 5)) . (count($names) > 5 ? sprintf(' (+%d more)', count($names) - 5) : '');
-            $findings[] = new Finding(
-                Finding::WARNING,
-                $g,
-                'unexplained-change',
-                sprintf('%d file(s) changed without a version change: %s', count($names), $sample),
-                sha1(implode(',', $names) . '|' . implode(',', array_values($files)))
-            );
+            // Keyed on the changed files' contents, so any further change while this waits for review alerts again.
+            $contentKey = sha1(implode(',', $names) . '|' . implode(',', array_values($files)));
+            $findings[] = $bumped
+                ? new Finding(
+                    Finding::WARNING,
+                    $g,
+                    'unverified-update',
+                    sprintf('Version %s -> %s, but %d changed file(s) could not be verified against an official source: %s', $old, $new, count($names), $sample),
+                    sha1($old . '>' . $new . '|' . $contentKey)
+                )
+                : new Finding(
+                    Finding::WARNING,
+                    $g,
+                    'unexplained-change',
+                    sprintf('%d file(s) changed without a version change: %s', count($names), $sample),
+                    $contentKey
+                );
             foreach ($names as $n) {
                 $hold[$n] = true;
             }
@@ -211,5 +224,20 @@ final class Analyzer
             $heldGroups[self::groupOf((string)$p)] = true;
         }
         return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'held_groups' => $heldGroups, 'notes' => $notes];
+    }
+
+    /**
+     * Legacy auto-accept is only for plugins and themes wordpress.org definitely does not host.
+     * A plugin whose previous version is published there is a repository plugin, so new files
+     * that did not verify mean an unpublished version; and if wordpress.org could not be asked,
+     * that is unknown, which must not be treated as "premium". Themes have no checksum API, and
+     * with wp_checksums off nothing is ever looked up, so both stay eligible.
+     */
+    private function confirmedNotRepositoryPlugin(string $group, string $oldVersion): bool
+    {
+        if ($this->wp === null || !preg_match('#^wp-content/plugins/([^/]+)$#', $group, $m)) {
+            return true;
+        }
+        return $this->wp->releaseStatus($m[1], $oldVersion) === WpChecksum::RELEASE_ABSENT;
     }
 }
