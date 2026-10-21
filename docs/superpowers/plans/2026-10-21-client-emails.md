@@ -19,7 +19,9 @@
 - Client emails never show a command (existing test `client emails never show commands` must keep passing).
 - No literal malware-family names in shipped files (existing test).
 - Public repository: no real client site names, folders or plugins in code, tests, fixtures or docs.
-- Attachment cap: **2 MB**. Server copies kept: **newest 30** in `state/reports/`.
+- Attachment cap: **2 MB**. Server copies kept: **newest 30 and at most 50 MB in total** in `state/reports/`; the newest is never deleted.
+- Report and pointer lines: relative paths and metadata only. No file contents, credentials, or absolute paths (they contain the hosting account name); the report's own location is given as `sentinel/state/reports/<name>`.
+- The owner's next action is always in the email body; the footer only says who to ask and never implies the contact receives or monitors alerts.
 - Report file name: `sentinel-report-<site-slug>-<YYYYMMDD-HHMM>.txt` (UTC; slug = lowercase `a-z0-9`, other runs collapsed to `-`, trimmed, max 40 chars, `site` if empty).
 - Footer line (exact copy): `Questions about this email? Contact <contact>.` Omitted when `contact` is empty; the body then says `your web developer`.
 
@@ -55,7 +57,9 @@
   - `Report lists every finding and every changed file, grouped, with nothing truncated`: 30 modified files in one theme plus 2 findings → report contains all 30 paths, both findings with rule, path, message, `[id …]` for dismissable ones and hash, `in this email` for due keys and `reported earlier` for the rest, group headings from `Analyzer::groupOf`, and no `more)`.
   - `Report shows each file's change type, size, time, code-file SHA-256 and status` (one `new`, `modified`, `removed`, permissions-only change; statuses from `$outcomes`; a path missing from `$outcomes` shows `reported` if it has a finding, else `accepted: not code`).
   - `Report file names are safe for any site name`: `'My Shop'` → `sentinel-report-my-shop-20261021-1430.txt`; `'Café / Bar'` → `…-caf-bar-…`; `'***'` → `…-site-…`; a 60-char name → slug of 40 chars.
-  - `Report keeps the newest 30 and cuts the attachment at the cap`: write 32 reports → 30 remain, the two oldest gone; `attachment($file, 100)` content is ≤ 100 bytes plus the cut line naming `$file`; under the cap the content equals the file.
+  - `Report labels a partial scan and its scope`: `complete => false` → header and changed-files heading say `part of a scan: changes found in this part only; the scan resumes on the next run`; `complete => true` → `complete scan`.
+  - `Report holds no absolute paths or contents`: with `root` = `/home/acct/public_html` and a note containing that root, the report contains neither `/home/acct` nor any file content, and the note shows the path relative to the website folder.
+  - `Report keeps the newest 30 and cuts the attachment at the cap`: write 32 reports → 30 remain, the two oldest gone; with reports totalling over 50 MB the oldest are pruned until under it, never the newest; `attachment($file, 100)` content is ≤ 100 bytes plus the cut line naming `$file`; under the cap the content equals the file.
 - [ ] **Step 2: Run** `php tests/run.php Report` → FAIL (`Class "Sentinel\Report" not found`).
 - [ ] **Step 3: Implement `Report`** in `src/Report.php`; write line by line with `fopen`/`fwrite` (no full string in memory); header lines in the spec's order (site, website folder, time UTC, Sentinel version, scan mode, complete or partial).
 - [ ] **Step 4: Run** `php tests/run.php Report` → PASS; `php build/compat.php` → `OK`.
@@ -90,7 +94,7 @@
   - `Notifier::send(string $subject, string $body, int $severity, ?array $attachment = null): void`
   - `Alerter::send(string $subject, string $body, int $topSeverity, ?array $attachment = null): array` (unchanged return)
   - `EmailNotifier`: with an attachment, `multipart/mixed` with a random boundary; part 1 `text/plain; charset=UTF-8`, `Content-Transfer-Encoding: 8bit` (so body text stays readable in the raw message and existing `assertContains` checks keep working); part 2 `text/plain; charset=UTF-8; name="<name>"`, `Content-Disposition: attachment; filename="<name>"`, base64 in 76-char lines. If `mail()` returns false with an attachment, retry once without it and append `The full report could not be attached; it is saved on the server: <path>` to the body.
-  - Other notifiers append one line: `Full report saved on the server: <path>`.
+  - Other notifiers append one line: `Full report saved on the server: sentinel/state/reports/<name>` (the attachment array carries this relative `path`; never an absolute path).
 
 - [ ] **Step 1: Write the failing tests:** `EmailNotifier attaches the report as a well-formed multipart message` (parse headers + body: boundary declared and used, two parts, attachment decodes to the content, filename present); `EmailNotifier retries without the attachment when mail() refuses it` (mailer fails when headers contain `multipart`, succeeds otherwise → delivered once, body has the note); `other channels get a pointer to the server copy` (ntfy/webhook/file body ends with the pointer line); without an attachment every notifier sends exactly what it sends today.
 - [ ] **Step 2: Run** `php tests/run.php Notifier` → FAIL.
@@ -127,7 +131,7 @@
 - Produces: `Digest::footer(string $contact): string` returning the exact footer copy or `''`. Body sentences refer to "the contact below" when a contact is set, else "your web developer". The footer sits after the owner-facing body and before `--` / the developer section.
 - Rule kept: `settingsChanged` and `recordsMissing` pass the previous, trusted contact (`$old['contact']`) to the footer; the change list line `Contact named in alerts: … (was: …)` stays.
 
-- [ ] **Step 1: Write the failing tests:** `client emails name the contact once, in the footer` — for each client email (alerts of every group, welcome, setup with flagged files, setup placement, settings problem, records missing) with `contact = Bro Media (info@bromedia.co.za)`: `substr_count($body, 'Bro Media') === 1` and the footer line is present; for the settings-changed email the count excludes the change-list line and the footer names the old contact after a contact change; with an empty contact no footer and `your web developer` appears; existing `never show commands` still passes.
+- [ ] **Step 1: Write the failing tests:** every client alert body still states the owner's next action (e.g. `forward this email`) without relying on the attachment; `client emails name the contact once, in the footer` — for each client email (alerts of every group, welcome, setup with flagged files, setup placement, settings problem, records missing) with `contact = Bro Media (info@bromedia.co.za)`: `substr_count($body, 'Bro Media') === 1` and the footer line is present; for the settings-changed email the count excludes the change-list line and the footer names the old contact after a contact change; with an empty contact no footer and `your web developer` appears; existing `never show commands` still passes.
 - [ ] **Step 2: Run** `php tests/run.php "contact once"` → FAIL.
 - [ ] **Step 3: Implement** the wording changes; keep tone (plain, calm, no commands); the welcome's "If you ever receive an alert, contact …" becomes "If you ever receive an alert, forward it to the contact below."
 - [ ] **Step 4: Run** `php tests/run.php` → all pass.

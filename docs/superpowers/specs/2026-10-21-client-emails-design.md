@@ -1,6 +1,6 @@
 # Client emails: contact in the footer, and a full report
 
-Date: 2026-10-21. Status: draft for approval. Builds on master after the detection-laundering PR (#10) is merged, because both change `Analyzer`, `Monitor`, `Run` and `Digest`; the implementation plan is written against master once #10 has merged.
+Date: 2026-10-21. Status: approved; refined after review (next action in the body, partial-scan labelling, relative paths only, storage bound, footer wording). Builds on master after the detection-laundering PR (#10) is merged, because both change `Analyzer`, `Monitor`, `Run` and `Digest`; the implementation plan is written against master once #10 has merged.
 
 ## Why
 
@@ -15,7 +15,7 @@ Two things get in the way today:
 
 - The contact appears once per email, as a footer line, e.g. `Questions about this email? Contact Bro Media (info@bromedia.co.za).` The body refers to it neutrally ("forward this email to the contact below", "whoever looks after your website").
 - Every alert email carries a full report: every finding and every changed file, nothing truncated, attached as a plain-text file.
-- The email body stays short: what happened, how worried to be, what to do, and a pointer to the attached report.
+- The email body stays short: what happened, how worried to be, **the owner's next action**, and a pointer to the attached report. The next action is always in the body; the attachment only adds detail for a developer.
 - The same report is kept on the server, so a developer can still get it if the attachment is stripped or lost.
 
 ## Non-goals
@@ -31,6 +31,8 @@ Two things get in the way today:
 - An alert that gets lost because of the attachment: if building or attaching the report fails, the email still goes out without it, and says so.
 - Emails that land in spam more often because of the attachment.
 - Literal malware-family names in shipped files (existing invariant; the report quotes rule IDs and messages, which already respect it).
+- A footer that implies the contact receives or monitors these alerts. The footer only says who to ask; the contact stays whatever `contact` is set to.
+- File contents, credentials or hosting account names in the report or pointer lines: paths are relative to the website folder (or to the sentinel folder for the report's own location), and only metadata is listed.
 
 ## What changes
 
@@ -46,7 +48,7 @@ Two things get in the way today:
 
 - Plain text, UTF-8, named `sentinel-report-<site-slug>-<YYYYMMDD-HHMM>.txt`.
 - Contents, in this order:
-  - header: site name, website folder, time (UTC), Sentinel version, scan mode and whether the scan was complete;
+  - header: site name, time (UTC), Sentinel version, scan mode and coverage: either `complete scan` or `part of a scan: changes found in this part only; the scan resumes on the next run`. The changed-files heading repeats that scope. No absolute paths (they contain the hosting account name);
   - findings: every finding the run produced (not only the ones due for this email), grouped by severity, each with rule, path, message, dismiss id and content hash, and marked `in this email` or `reported earlier`. The email body covers only the due findings, as today;
   - changed files: **every file in the run's change list, one line each**, nothing summarised (decided: the owner asked for a full record to investigate from). Grouped by plugin/theme/folder (`Analyzer::groupOf`), each line with change type (new, modified, removed, permissions only), size, modification time, SHA-256 for code files, and a status:
     - `reported` (part of a finding),
@@ -66,8 +68,8 @@ Two things get in the way today:
 
 ### Server copy
 
-- Each report is also written to `state/reports/` (same name). Keep the newest 30 (my call), oldest deleted first.
-- Non-email channels (ntfy, Telegram, webhook, file) get one extra line: `Full report saved on the server: <path>`.
+- Each report is also written to `state/reports/` (same name). Keep the newest 30 and at most 50 MB in total (my calls), oldest deleted first; the newest report is never deleted.
+- Non-email channels (ntfy, Telegram, webhook, file) get one extra line: `Full report saved on the server: sentinel/state/reports/<name>` (relative to the account's home, never an absolute path).
 - A failure to write the report never stops the alert (existing rule: alerts go out when state writes fail).
 
 ## Constraints
