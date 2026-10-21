@@ -22,6 +22,10 @@ final class Config
     public $stateDir = '';
     public $watch = ['.'];
     public $exclude = [];
+    /** Changes nothing flags are recorded without an email: everywhere (quiet_changes), or only under quiet_folders. */
+    public $quietChanges = false;
+    /** @var string[] */
+    public $quietFolders = [];
     public $codeExtensions = [];
     public $sensitive = [];
     public $uploadsDir = '';
@@ -35,6 +39,8 @@ final class Config
     public $wpChecksums = true;
     /** Accept plugin/theme version bumps whose files cannot be verified against an official source (legacy behaviour). */
     public $autoAcceptUnverifiedUpdates = false;
+    /** The developer's update policy (sentinel.json), which applies when settings.txt has no line for it. */
+    public $autoAcceptDefault = false;
     /** Who alert recipients should contact; shown in client alerts. */
     public $contact = '';
     /** 'technical' alerts show commands; 'client' alerts are plain language with no commands. */
@@ -80,6 +86,9 @@ final class Config
     /** Whether exclude and sensitive were configured, or are the profile's defaults (not written back). */
     private $excludeConfigured = false;
     private $sensitiveConfigured = false;
+    private $quietFoldersConfigured = false;
+    /** @var PathFilter|null built from quiet_folders when first needed */
+    private $quietFilter = null;
 
     public static function load(string $file): Config
     {
@@ -108,6 +117,7 @@ final class Config
             }
         }
         $settingsFile = (string)($raw['settings_file'] ?? '');
+        $autoAcceptDefault = (bool)($raw['auto_accept_unverified_updates'] ?? false); // read as fromArray reads it
         $problem = '';
         $settings = null;
         if ($settingsFile !== '') {
@@ -127,6 +137,7 @@ final class Config
         $c->accountHome = self::accountHomeFor($dir, $configured);
         $c->siteRootSetting = $setting;
         $c->settingsProblem = $problem;
+        $c->autoAcceptDefault = $autoAcceptDefault;
         $c->settings = $settings !== null ? $settings->toArray() : [];
         return $c;
     }
@@ -203,6 +214,9 @@ final class Config
         if ($s->approveUpdates !== null) {
             $raw['auto_accept_unverified_updates'] = $s->approveUpdates;
         }
+        if ($s->quietChanges !== null) { // settings.txt wins over a developer's quiet_changes in sentinel.json
+            $raw['quiet_changes'] = $s->quietChanges;
+        }
         if ($s->heartbeat !== '') {
             $raw['heartbeat_url'] = $s->heartbeat;
         }
@@ -258,6 +272,10 @@ final class Config
         $c->excludeConfigured = isset($raw['exclude']);
         $c->sensitiveConfigured = isset($raw['sensitive']);
         $c->exclude = self::strings($raw['exclude'] ?? $d['exclude']);
+        $c->quietFoldersConfigured = isset($raw['quiet_folders']);
+        $c->quietFolders = self::strings($raw['quiet_folders'] ?? []);
+        // Only the boolean true: a string such as "false" or "no" must not switch quiet on.
+        $c->quietChanges = ($raw['quiet_changes'] ?? false) === true;
         $c->codeExtensions = array_map('strtolower', self::strings($raw['code_extensions'] ?? $d['code_extensions']));
         $c->sensitive = self::strings($raw['sensitive'] ?? $d['sensitive']);
         $c->uploadsDir = trim((string)($raw['uploads_dir'] ?? $d['uploads_dir']), '/');
@@ -287,6 +305,7 @@ final class Config
         $c->updateGraceSeconds = self::int($raw, 'update_grace_seconds', 120, 0);
         $c->wpChecksums = (bool)($raw['wp_checksums'] ?? true);
         $c->autoAcceptUnverifiedUpdates = (bool)($raw['auto_accept_unverified_updates'] ?? false);
+        $c->autoAcceptDefault = $c->autoAcceptUnverifiedUpdates; // load() replaces it with the value before settings.txt
         $c->contact = trim((string)($raw['contact'] ?? ''));
         $c->audience = (string)($raw['audience'] ?? 'technical');
         if (!in_array($c->audience, ['technical', 'client'], true)) {
@@ -317,6 +336,7 @@ final class Config
             'exclude' => $this->exclude,
             'code_extensions' => $this->codeExtensions,
             'sensitive' => $this->sensitive,
+            'quiet_folders' => $this->quietFolders,
             'uploads_dir' => $this->uploadsDir,
             'temp_root' => $this->tempRoot,
             'channels' => $this->channels,
@@ -337,7 +357,11 @@ final class Config
             'clamdscan_path' => $this->clamdscanPath,
             'yara_path' => $this->yaraPath,
             'yara_rules' => $this->yaraRules,
-        ], array_filter(['exclude' => !$this->excludeConfigured, 'sensitive' => !$this->sensitiveConfigured]));
+        ], array_filter([
+            'exclude' => !$this->excludeConfigured,
+            'sensitive' => !$this->sensitiveConfigured,
+            'quiet_folders' => !$this->quietFoldersConfigured,
+        ]));
     }
 
     public function abs(string $rel): string
@@ -389,6 +413,58 @@ final class Config
     public function wordpressInstalls(): array
     {
         return array_merge($this->profile === 'wordpress' ? [''] : [], $this->nestedWordPress);
+    }
+
+    /**
+     * Whether a change at this path is recorded without an email unless something flags it.
+     * quiet_folders patterns are anchored at the website folder: "app/" is <site>/app/ only, not a
+     * folder called app inside a theme or a plugin called app (anyone who can write files could
+     * create those).
+     */
+    public function isQuiet(string $rel): bool
+    {
+        if ($this->quietChanges) {
+            return true;
+        }
+        if (!$this->quietFolders) {
+            return false;
+        }
+        if ($this->quietFilter === null) {
+            $this->quietFilter = new PathFilter(array_map(function (string $p): string {
+                $p = trim($p);
+                return $p === '' ? '' : '/' . ltrim($p, '/');
+            }, $this->quietFolders));
+        }
+        return $this->quietFilter->matches($rel);
+    }
+
+    /** Files WordPress itself ships in wp-content, relative to an install. */
+    private const CORE_IN_WP_CONTENT = ['wp-content/index.php', 'wp-content/plugins/index.php', 'wp-content/themes/index.php', 'wp-content/plugins/hello.php'];
+
+    /**
+     * WordPress core of any install: its wp-admin and wp-includes, the core files directly in its
+     * folder (index.php, xmlrpc.php, wp-*.php), and the few files WordPress ships in wp-content
+     * (the index.php placeholders and hello.php). wp-config.php is not core: it is already sensitive.
+     */
+    public function isCorePath(string $rel): bool
+    {
+        foreach ($this->wordpressInstalls() as $prefix) {
+            if ($prefix === '') {
+                $local = $rel;
+            } elseif (strpos($rel, $prefix . '/') === 0) {
+                $local = substr($rel, strlen($prefix) + 1);
+            } else {
+                continue;
+            }
+            if (strpos($local, 'wp-admin/') === 0 || strpos($local, 'wp-includes/') === 0 || in_array($local, self::CORE_IN_WP_CONTENT, true)) {
+                return true;
+            }
+            if (strpos($local, '/') === false && $local !== 'wp-config.php'
+                && ($local === 'index.php' || $local === 'xmlrpc.php' || preg_match('/^wp-[^\/]*\.php$/', $local) === 1)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public function hasWordPress(): bool

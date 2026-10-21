@@ -549,3 +549,339 @@ t('Analyzer outcome: with auto-accept, a version bump in a plugin with an unrevi
     assertSame(['unverified-update@wp-content/plugins/foo'], ruleList($r));
     assertSame(['wp-content/plugins/foo/foo.php' => Report::STATUSES[0]], $r['outcomes']);
 });
+
+function fooHeader(string $version, string $body = ''): string
+{
+    return "<?php\n/*\nPlugin Name: Foo\nVersion: $version\n*/\n" . $body;
+}
+
+/** path => outcome, sorted, for comparing. */
+function sortedOutcomes(array $r): array
+{
+    $o = $r['outcomes'];
+    ksort($o);
+    return $o;
+}
+
+t('Quiet: an unexplained change and an unverified update are accepted quietly, recorded, and no finding is raised', function () {
+    [$root, $c, $b] = wpFixture(['wp-content/themes/t/f.php' => '<?php // theme'], ['quiet_changes' => true]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited by the owner');
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.1', "// v2\n"));
+    $r = runAnalysis($c, $b, null, $old);
+    assertSame([], ruleList($r));
+    assertSame([], $r['hold']);
+    assertSame([], $r['version_holds'], 'the update is accepted, so its version is recorded');
+    assertSame([
+        'wp-content/plugins/foo/foo.php' => Report::QUIET,
+        'wp-content/themes/t/f.php' => Report::QUIET,
+    ], sortedOutcomes($r));
+    $quiet = $r['quiet'];
+    sort($quiet);
+    assertSame(['wp-content/plugins/foo/foo.php', 'wp-content/themes/t/f.php'], $quiet);
+    assertContains('wp-content/plugins/foo accepted quietly (1 file(s))', implode("\n", $r['info']));
+    assertSame('accepted: quiet (no email)', Report::QUIET);
+    assertSame(Report::QUIET, Report::STATUSES[count(Report::STATUSES) - 1]);
+
+    // Nothing is quiet unless asked for: the same changes are reported by default.
+    [$root, $c, $b] = wpFixture(['wp-content/themes/t/f.php' => '<?php // theme']);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited by the owner');
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.1', "// v2\n"));
+    $r = runAnalysis($c, $b, null, $old);
+    assertSame(['unexplained-change@wp-content/themes/t', 'unverified-update@wp-content/plugins/foo'], ruleList($r));
+    assertSame([], $r['quiet']);
+});
+
+t('Quiet: never for a detection, a same-run detection in the plugin, an unresolved detection, PHP in uploads, a sensitive file, or core', function () {
+    $quiet = ['quiet_changes' => true];
+
+    // A detection.
+    [$root, $c, $b] = wpFixture([], $quiet);
+    putFile($root, 'lib/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    $r = runAnalysis($c, $b);
+    assertSame(['test-marker@lib/evil.php'], ruleList($r));
+    assertSame(['lib/evil.php' => Report::STATUSES[0]], $r['outcomes']);
+    assertSame([], $r['quiet']);
+
+    // A detection in the same plugin this run: its update is not quiet either.
+    [$root, $c, $b] = wpFixture([], $quiet);
+    $old = VersionTracker::read($c);
+    putFile($root, 'wp-content/plugins/foo/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.1', "// v2\n"));
+    $r = runAnalysis($c, $b, null, $old);
+    assertSame(['test-marker@wp-content/plugins/foo/evil.php', 'unverified-update@wp-content/plugins/foo'], ruleList($r));
+    assertSame(Report::STATUSES[0], $r['outcomes']['wp-content/plugins/foo/foo.php']);
+    assertTrue(isset($r['hold']['wp-content/plugins/foo/foo.php']));
+    assertTrue(isset($r['version_holds']['wp-content/plugins/foo']));
+    assertSame([], $r['quiet']);
+
+    // An unresolved detection elsewhere in the plugin.
+    [$root, $c, $b] = wpFixture([], $quiet);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.0', "// edited\n"));
+    $unresolved = ['wp-content/plugins/foo/other.php' => ['sha256' => str_repeat('0', 64), 'rules' => ['marker'], 'severity' => Finding::CRITICAL, 'first' => 1]];
+    $r = analyzeWithRules($c, $b, [], ['unresolved' => $unresolved], $old);
+    assertSame(['unexplained-change@wp-content/plugins/foo'], ruleList($r));
+    assertSame(['wp-content/plugins/foo/foo.php' => Report::STATUSES[0]], $r['outcomes']);
+    assertSame([], $r['quiet']);
+
+    // PHP in uploads.
+    [$root, $c, $b] = wpFixture([], $quiet);
+    putFile($root, 'wp-content/uploads/x.php', '<?php echo 1;');
+    $r = runAnalysis($c, $b);
+    assertSame(['php-in-uploads@wp-content/uploads/x.php'], ruleList($r));
+    assertSame([], $r['quiet']);
+
+    // Sensitive files.
+    [$root, $c, $b] = wpFixture(['.htaccess' => '# rules'], $quiet);
+    bump($root, 'wp-config.php', '<?php // edited');
+    bump($root, '.htaccess', '# rules, edited');
+    $r = runAnalysis($c, $b);
+    assertSame(['sensitive-file-changed@.htaccess', 'sensitive-file-changed@wp-config.php'], ruleList($r));
+    assertSame([], $r['quiet']);
+
+    // WordPress core while its checksums could not be downloaded (no route: a dead network).
+    [$root, $c, $b] = wpFixture(['wp-includes/load.php' => '<?php // core', 'wp-login.php' => '<?php // login'], $quiet);
+    bump($root, 'wp-includes/load.php', '<?php // core, changed');
+    bump($root, 'wp-login.php', '<?php // login, changed');
+    $wp = new WpChecksum(new FakeHttp(), $c, tmpdir());
+    $r = runAnalysis($c, $b, analyzerFor($c, $wp));
+    assertSame(['unexplained-change@.', 'unexplained-change@wp-includes'], ruleList($r));
+    assertSame(['wp-includes/load.php' => Report::STATUSES[0], 'wp-login.php' => Report::STATUSES[0]], sortedOutcomes($r));
+    assertSame([], $r['quiet']);
+});
+
+t('Quiet folders: only files in quiet_folders are quiet; a group split across both is partly reported', function () {
+    [$root, $c, $b] = wpFixture(['app/x.php' => '<?php // app', 'wp-content/themes/t/f.php' => '<?php // theme'], ['quiet_folders' => ['app/']]);
+    bump($root, 'app/x.php', '<?php // app, deployed');
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited');
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content/themes/t'], ruleList($r));
+    assertSame(['app/x.php' => Report::QUIET, 'wp-content/themes/t/f.php' => Report::STATUSES[0]], sortedOutcomes($r));
+    assertSame(['app/x.php'], $r['quiet']);
+    assertSame(['wp-content/themes/t/f.php' => true], $r['hold']);
+
+    // One group, split: the quiet file is accepted, the finding covers the rest only.
+    [$root, $c, $b] = wpFixture(['wp-content/themes/t/f.php' => '<?php // theme', 'wp-content/themes/t/inc/a.php' => '<?php // a'], ['quiet_folders' => ['wp-content/themes/t/inc/']]);
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited');
+    bump($root, 'wp-content/themes/t/inc/a.php', '<?php // a, edited');
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content/themes/t'], ruleList($r));
+    assertContains('1 file(s) changed', $r['findings'][0]->message);
+    assertSame(1, $r['findings'][0]->files);
+    assertSame(['wp-content/themes/t/f.php' => Report::STATUSES[0], 'wp-content/themes/t/inc/a.php' => Report::QUIET], sortedOutcomes($r));
+
+    // A bumped plugin, split: the update is not fully accepted, so its version waits.
+    [$root, $c, $b] = wpFixture(['wp-content/plugins/foo/inc/a.php' => '<?php // a'], ['quiet_folders' => ['wp-content/plugins/foo/inc/']]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.1', "// v2\n"));
+    bump($root, 'wp-content/plugins/foo/inc/a.php', '<?php // a, v2');
+    $r = runAnalysis($c, $b, null, $old);
+    assertSame(['unverified-update@wp-content/plugins/foo'], ruleList($r));
+    assertContains('1 changed file(s)', $r['findings'][0]->message);
+    assertSame(['wp-content/plugins/foo/foo.php' => Report::STATUSES[0], 'wp-content/plugins/foo/inc/a.php' => Report::QUIET], sortedOutcomes($r));
+    assertTrue(isset($r['version_holds']['wp-content/plugins/foo']));
+    assertNotContains('accepted quietly', implode("\n", $r['info']));
+});
+
+t('Quiet: a failed scan check keeps the file held, not quiet', function () {
+    [$root, $c, $b] = wpFixture([], ['quiet_changes' => true]);
+    putFile($root, 'lib/slow.php', str_repeat('a', 40) . '!');
+    $r = withBrokenRegex(function () use ($c, $b) {
+        return analyzeWithRules($c, $b, [heavyRule()]);
+    });
+    assertSame(['scan-error@lib/slow.php'], ruleList($r));
+    assertSame(['lib/slow.php' => 'held: judged next run'], $r['outcomes']);
+    assertSame(['lib/slow.php' => true], $r['hold']);
+    assertSame([], $r['quiet']);
+});
+
+t('Quiet: when ClamAV could not scan this run, changes are reported as usual, not quiet', function () {
+    [$root, $c, $b] = wpFixture([], ['quiet_changes' => true]);
+    $clam = fakeTool(tmpdir(), 'clamscan', 'echo "lstat() failed: Permission denied" >&2; exit 2
+');
+    putFile($root, 'lib/fine.php', '<?php // fine');
+    $r = analyzeWithRules($c, $b, [], ['external' => new ExternalScanner($clam, null, null)]);
+    assertSame(['unexplained-change@lib'], ruleList($r));
+    assertSame(['lib/fine.php' => Report::STATUSES[0]], $r['outcomes']);
+    assertContains('clamscan failed', implode("\n", $r['notes']));
+    assertSame([], $r['quiet']);
+});
+
+t('Quiet: a wordpress.org plugin keeps its protection: an unpublished or unconfirmed version is reported, a premium one is quiet', function () {
+    $v1 = fooHeader('1.0', "// v1\n");
+    $cases = [
+        // [route => [status, body]], expected rules
+        'published 1.0, fake 1.0.9' => [[
+            'https://downloads.wordpress.org/plugin-checksums/foo/1.0.json' => [200, json_encode(['files' => ['foo.php' => ['sha256' => hash('sha256', $v1)]]])],
+            'https://downloads.wordpress.org/plugin-checksums/foo/' => [404, '{"error":"not found"}'],
+        ], ['unverified-update@wp-content/plugins/foo']],
+        'wordpress.org unavailable' => [[
+            'https://downloads.wordpress.org/plugin-checksums/' => [503, 'unavailable'],
+        ], ['unverified-update@wp-content/plugins/foo']],
+        'premium (not on wordpress.org)' => [[
+            'https://downloads.wordpress.org/plugin-checksums/foo/' => [404, '{"error":"not found"}'],
+        ], []],
+    ];
+    foreach ($cases as $label => [$routes, $want]) {
+        [$root, $c, $b] = wpFixture([], ['quiet_changes' => true]);
+        $old = VersionTracker::read($c);
+        $http = new FakeHttp();
+        coreRoute($http, []);
+        foreach ($routes as $url => [$status, $body]) {
+            $http->route($url, $status, $body);
+        }
+        bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.0.9', "// v2\n"));
+        $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), $old);
+        assertSame($want, ruleList($r), $label);
+        assertSame($want ? [] : ['wp-content/plugins/foo/foo.php'], $r['quiet'], $label);
+    }
+
+    // Unbumped: a change in a plugin wordpress.org could not be asked about is not quiet either.
+    [$root, $c, $b] = wpFixture([], ['quiet_changes' => true]);
+    $old = VersionTracker::read($c);
+    $http = new FakeHttp();
+    coreRoute($http, []);
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.0', "// edited\n"));
+    $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), $old);
+    assertSame(['unexplained-change@wp-content/plugins/foo'], ruleList($r));
+    assertSame([], $r['quiet']);
+});
+
+t('Quiet: a site that is not quiet asks wordpress.org nothing more than before', function () {
+    foreach ([false, true] as $quietSite) {
+        [$root, $c, $b] = wpFixture([], ['quiet_changes' => $quietSite]);
+        $old = VersionTracker::read($c);
+        $http = new FakeHttp();
+        coreRoute($http, []);
+        $http->route('https://downloads.wordpress.org/plugin-checksums/foo/', 404, '{"error":"not found"}');
+        bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.1', "// v2\n"));
+        $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), $old);
+        $asked = array_values(array_filter(array_map(function (array $call): string {
+            return (string)$call[1];
+        }, $http->calls), function (string $url): bool {
+            return strpos($url, '/plugin-checksums/foo/1.0.json') !== false;
+        }));
+        // The quiet site checks the previous version is not a wordpress.org release; the other one does not ask.
+        assertSame($quietSite ? 1 : 0, count($asked), $quietSite ? 'quiet site' : 'default site');
+        assertSame($quietSite ? [] : ['unverified-update@wp-content/plugins/foo'], ruleList($r));
+    }
+});
+
+t('Quiet: server configuration files are never quiet, wherever they are', function () {
+    $quiet = ['quiet_changes' => true];
+
+    // (a) An existing uploads .htaccess rewritten so that a harmless-looking extension runs as PHP.
+    [$root, $c, $b] = wpFixture(['wp-content/uploads/.htaccess' => "Options -Indexes\n"], $quiet);
+    bump($root, 'wp-content/uploads/.htaccess', "AddHandler application/x-httpd-php .txt\n");
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content'], ruleList($r));
+    assertSame(['wp-content/uploads/.htaccess' => Report::STATUSES[0]], $r['outcomes']);
+    assertSame([], $r['quiet']);
+
+    // (b) A new .htaccess in a plugin, and (c) a php.ini in a plugin folder; a plain file beside them stays quiet.
+    [$root, $c, $b] = wpFixture([], $quiet);
+    putFile($root, 'wp-content/plugins/foo/.htaccess', "AddHandler application/x-httpd-php .txt\n");
+    putFile($root, 'wp-content/plugins/foo/inc/PHP.INI', "auto_prepend_file = /tmp/x\n");
+    putFile($root, 'wp-content/plugins/foo/inc/ok.php', '<?php // ok');
+    $r = runAnalysis($c, $b, null, VersionTracker::read($c));
+    assertSame(['unexplained-change@wp-content/plugins/foo'], ruleList($r));
+    assertContains('2 file(s)', $r['findings'][0]->message);
+    assertSame([
+        'wp-content/plugins/foo/.htaccess' => Report::STATUSES[0],
+        'wp-content/plugins/foo/inc/PHP.INI' => Report::STATUSES[0],
+        'wp-content/plugins/foo/inc/ok.php' => Report::QUIET,
+    ], sortedOutcomes($r));
+    assertSame(['wp-content/plugins/foo/inc/ok.php'], $r['quiet']);
+});
+
+t('Quiet: no "accepted quietly" line while a file of the update is still being copied', function () {
+    [$root, $c, $b] = wpFixture(['wp-content/plugins/foo/inc/a.php' => '<?php // a'], ['quiet_changes' => true, 'update_grace_seconds' => 120]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.1', "// v2\n"));
+    bump($root, 'wp-content/plugins/foo/inc/a.php', '<?php // a, v2', 0);
+    $now = time();
+    $changes = diffByPath($c, $b);
+    // foo.php settled long ago (ctime cannot be set from PHP, so the record says so); a.php just arrived.
+    $changes['wp-content/plugins/foo/foo.php']['new']['mtime'] = $now - 600;
+    $changes['wp-content/plugins/foo/foo.php']['new']['ctime'] = $now - 600;
+    $r = analyzerFor($c)->analyze(array_values($changes), $old, VersionTracker::read($c), false, $now);
+    assertSame([], ruleList($r));
+    assertSame(['wp-content/plugins/foo/foo.php' => Report::QUIET, 'wp-content/plugins/foo/inc/a.php' => 'held: judged next run'], sortedOutcomes($r));
+    assertTrue(isset($r['version_holds']['wp-content/plugins/foo']));
+    assertNotContains('accepted quietly', implode("\n", $r['info']));
+});
+
+t('Quiet folders: "app/" is the app folder of the website only, not a folder of that name in a theme or a plugin called app', function () {
+    [$root, $c, $b] = wpFixture(['app/x.php' => '<?php // app', 'wp-content/themes/t/f.php' => '<?php // t'], ['quiet_folders' => ['app/']]);
+    bump($root, 'app/x.php', '<?php // app, deployed');
+    putFile($root, 'wp-content/themes/t/app/shell.php', '<?php // added to the theme');
+    putFile($root, 'wp-content/plugins/app/app.php', '<?php // a new plugin called app');
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content/plugins/app', 'unexplained-change@wp-content/themes/t'], ruleList($r));
+    assertSame(['app/x.php'], $r['quiet']);
+});
+
+t('Quiet: a file that becomes world-writable with its content, or arrives world-writable, is not quiet', function () {
+    [$root, $c, $b] = wpFixture(['wp-content/themes/t/f.php' => '<?php // theme', 'wp-content/themes/t/g.php' => '<?php // g'], ['quiet_changes' => true]);
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited');
+    chmod($root . '/wp-content/themes/t/f.php', 0666);
+    putFile($root, 'wp-content/themes/t/new.php', '<?php // new');
+    chmod($root . '/wp-content/themes/t/new.php', 0666);
+    bump($root, 'wp-content/themes/t/g.php', '<?php // g, edited'); // stays 0644: still quiet
+    clearstatcache();
+    if ((fileperms($root . '/wp-content/themes/t/new.php') & 0002) === 0) {
+        skip('chmod has no effect here');
+    }
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content/themes/t'], ruleList($r));
+    assertSame(2, $r['findings'][0]->files);
+    assertSame([
+        'wp-content/themes/t/f.php' => Report::STATUSES[0],
+        'wp-content/themes/t/g.php' => Report::QUIET,
+        'wp-content/themes/t/new.php' => Report::STATUSES[0],
+    ], sortedOutcomes($r));
+    assertSame(['wp-content/themes/t/g.php'], $r['quiet']);
+
+    // Already world-writable before: an edit does not make it "become" so, and stays quiet.
+    [$root, $c, $b] = wpFixture(['wp-content/themes/t/f.php' => '<?php // theme'], ['quiet_changes' => true]);
+    chmod($root . '/wp-content/themes/t/f.php', 0666);
+    clearstatcache();
+    snapshot($c, $b);
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited');
+    $r = runAnalysis($c, $b);
+    assertSame([], ruleList($r));
+    assertSame(['wp-content/themes/t/f.php'], $r['quiet']);
+});
+
+t('Quiet: WordPress files shipped in wp-content are never quiet when their checksums are not available', function () {
+    [$root, $c, $b] = wpFixture(['wp-content/index.php' => '<?php // Silence is golden.', 'wp-content/plugins/hello.php' => '<?php // hello', 'wp-content/themes/index.php' => '<?php // Silence'], ['quiet_changes' => true]);
+    bump($root, 'wp-content/index.php', '<?php // injected');
+    bump($root, 'wp-content/plugins/hello.php', '<?php // injected');
+    bump($root, 'wp-content/themes/index.php', '<?php // injected');
+    $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum(new FakeHttp(), $c, tmpdir())));
+    assertSame([], $r['quiet']);
+    assertSame([
+        'wp-content/index.php' => Report::STATUSES[0],
+        'wp-content/plugins/hello.php' => Report::STATUSES[0],
+        'wp-content/themes/index.php' => Report::STATUSES[0],
+    ], sortedOutcomes($r));
+});
+
+t('Quiet: WordPress drop-ins that load without being activated are sensitive files, never quiet', function () {
+    $dropins = ['sunrise.php', 'maintenance.php', 'fatal-error-handler.php', 'php-error.php', 'db-error.php', 'install.php', 'blog-deleted.php', 'advanced-cache.php'];
+    [$root, $c, $b] = wpFixture(['shop/wp-config.php' => '<?php'], ['quiet_changes' => true]);
+    $want = [];
+    foreach ($dropins as $f) {
+        foreach (['', 'shop/'] as $p) {
+            putFile($root, $p . 'wp-content/' . $f, '<?php // drop-in');
+            $want[] = 'sensitive-file-changed@' . $p . 'wp-content/' . $f;
+        }
+    }
+    putFile($root, 'wp-content/plugins/foo/install.php', '<?php // a plugin file of that name is not a drop-in');
+    sort($want);
+    $r = runAnalysis($c, $b, null, VersionTracker::read($c));
+    assertSame($want, ruleList($r));
+    assertSame(['wp-content/plugins/foo/install.php'], $r['quiet']);
+});

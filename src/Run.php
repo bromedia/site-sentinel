@@ -196,7 +196,7 @@ final class Run
             // not make it go quiet before someone has reviewed it.
             $detections = new Detections($state);
             foreach ($scan['findings'] as $f) {
-                if (Detections::tracked($config, $f->path) && !in_array($f->rule, Digest::MONITORING, true)) {
+                if (!in_array($f->rule, Digest::MONITORING, true)) {
                     $earlier = $detections->all()[$f->path] ?? [];
                     $rules = array_values(array_merge((array)($earlier['rules'] ?? []), [$f->rule]));
                     $detections->record($f->path, $f->hash, $rules, max((int)($earlier['severity'] ?? 0), $f->severity), $now);
@@ -286,6 +286,8 @@ final class Run
             '  Files recorded: ' . number_format($recorded),
             '  WordPress: ' . self::wordpressLine($config, $scan, $who),
         ], $config->hasWordPress() ? ['  Plugin and theme updates: ' . self::policy($config->autoAcceptUnverifiedUpdates)] : [], [
+            '  Changed files: ' . ($config->quietChanges ? 'recorded quietly unless they look like hacking' : 'you are told about every change that cannot be verified'),
+        ], $config->quietFolders ? ['  Recorded quietly in: ' . implode(', ', $config->quietFolders)] : [], [
             '  Alerts go to: ' . implode(', ', self::recipients($config)),
             '',
             'What happens now',
@@ -407,6 +409,7 @@ final class Run
                 'website' => 'Website name',
                 'contact' => 'Contact named in alerts',
                 'approve_updates' => 'Plugin and theme updates',
+                'changed_files' => 'Changed files',
                 'heartbeat' => 'Heartbeat',
                 'from' => 'Alerts are sent from',
             ];
@@ -415,7 +418,11 @@ final class Run
                     return $v ? implode(', ', (array)$v) : '(nobody)';
                 }
                 if ($k === 'approve_updates') {
-                    return self::policy($v === null ? $config->autoAcceptUnverifiedUpdates : (bool)$v);
+                    // No line (then or now) is the developer's default, whatever the new settings.txt says.
+                    return self::policy($v === null ? $config->autoAcceptDefault : (bool)$v);
+                }
+                if ($k === 'changed_files') {
+                    return $v === 'quiet' ? 'quiet' : 'tell me'; // absent (an install from before the setting) is the default, whatever the new config says
                 }
                 return (string)$v !== '' ? (string)$v : '(not set)';
             };

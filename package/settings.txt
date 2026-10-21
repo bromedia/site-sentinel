@@ -18,6 +18,12 @@ contact = Bro Media (info@bromedia.co.za)
 #         developer has checked and approved it.
 approve_plugin_updates_automatically = yes
 
+# 5. Changes to the website's files that do not look like hacking: tell me or quiet
+#    tell me: every change that cannot be verified sends an email (safest).
+#    quiet:   such changes are recorded without an email; anything that looks like hacking,
+#             and changes to sensitive files, still send an email straight away.
+changed_files = tell me
+
 # For your web developer (recommended): a heartbeat address, pinged after every run, so a
 # service such as healthchecks.io warns when Site Sentinel stops running.
 # heartbeat = https://hc-ping.com/your-check-id

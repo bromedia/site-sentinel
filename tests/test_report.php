@@ -313,3 +313,73 @@ t('Report: the final part of a resumed scan does not claim to be the complete sc
         assertNotContains('final part', $text);
     }
 });
+
+function quietEntries(int $n, int $ts, string $group = 'wp-content/themes/shopfront'): array
+{
+    $out = [];
+    for ($i = 1; $i <= $n; $i++) {
+        $out[] = ['path' => sprintf('%s/inc/part-%04d.php', $group, $i), 'group' => $group, 'ts' => $ts];
+    }
+    return $out;
+}
+
+t('Report: the quiet section lists what was accepted quietly, by group with UTC times, and says what was dropped', function () {
+    $ts = gmmktime(9, 5, 0, 10, 20, 2026);
+    $entries = array_merge(
+        quietEntries(2, $ts),
+        [['path' => 'wp-content/plugins/foo/foo.php', 'group' => 'wp-content/plugins/foo', 'ts' => $ts + 3600]]
+    );
+    $text = Report::write(tmpdir() . '/r', reportMeta(), [], [], [], [], [], ['entries' => $entries, 'dropped' => 0]);
+    $text = (string)file_get_contents($text);
+    assertContains("ACCEPTED QUIETLY SINCE THE LAST EMAIL (3)\n", $text);
+    assertContains("wp-content/plugins/foo (1)\n  wp-content/plugins/foo/foo.php | 2026-10-20 10:05 UTC\n", $text);
+    assertContains("wp-content/themes/shopfront (2)\n  wp-content/themes/shopfront/inc/part-0001.php | 2026-10-20 09:05 UTC\n", $text);
+    assertNotContains('earlier not listed', $text);
+
+    $text = reportText(reportMeta(), [], [], [], [], [], []);
+    assertNotContains('ACCEPTED QUIETLY', $text, 'no section when nothing was accepted quietly');
+    $file = Report::write(tmpdir() . '/r', reportMeta(), [], [], [], [], [], ['entries' => [], 'dropped' => 0]);
+    assertNotContains('ACCEPTED QUIETLY', (string)file_get_contents($file));
+
+    // Paths in the section are scrubbed like every other line.
+    $file = Report::write(tmpdir() . '/r', reportMeta(), [], [], [], [], [], ['entries' => [['path' => '/home/acct/public_html/odd.php', 'group' => '.', 'ts' => $ts]], 'dropped' => 0]);
+    $text = (string)file_get_contents($file);
+    assertNotContains('/home/acct', $text);
+    assertContains('  odd.php | ', $text);
+});
+
+t('Quiet log is capped at 2000 and counts what it dropped', function () {
+    $state = new Sentinel\State(tmpdir() . '/state');
+    $log = new Sentinel\QuietLog($state);
+    $paths = [];
+    for ($i = 1; $i <= 2050; $i++) {
+        $paths[] = sprintf('wp-content/themes/t/f-%04d.php', $i);
+    }
+    $ts = gmmktime(9, 5, 0, 10, 20, 2026);
+    $log->add($paths, $ts);
+    $p = $log->pending();
+    assertSame(2000, count($p['entries']));
+    assertSame(50, $p['dropped']);
+    assertSame('wp-content/themes/t/f-0051.php', $p['entries'][0]['path'], 'the oldest are the ones dropped');
+    assertSame('wp-content/themes/t/f-2050.php', $p['entries'][1999]['path']);
+    assertSame('wp-content/themes/t', $p['entries'][0]['group']);
+    assertSame($ts, $p['entries'][0]['ts']);
+
+    // It survives a restart, keeps counting, and starts again once cleared.
+    $again = new Sentinel\QuietLog($state);
+    assertSame($p, $again->pending());
+    $again->add(['x/y.php'], $ts + 60);
+    assertSame(2000, count($again->pending()['entries']));
+    assertSame(51, $again->pending()['dropped']);
+    assertSame('x', $again->pending()['entries'][1999]['group']);
+    $again->clear();
+    assertSame(['entries' => [], 'dropped' => 0], (new Sentinel\QuietLog($state))->pending());
+
+    $file = Report::write(tmpdir() . '/r', reportMeta(), [], [], [], [], [], $p);
+    $text = (string)file_get_contents($file);
+    assertContains("ACCEPTED QUIETLY SINCE THE LAST EMAIL (2000)\n", $text);
+    assertContains("(50 earlier not listed)\n", $text);
+    assertContains('f-2050.php', $text);
+    assertNotContains('f-0050.php', $text);
+    assertTrue(strrpos($text, '(50 earlier not listed)') > strrpos($text, 'f-2050.php'), 'the note ends the list');
+});

@@ -13,6 +13,9 @@ final class Analyzer
     private const PERMISSIONS = Report::STATUSES[4];
     private const REMOVED = Report::STATUSES[5];
     private const HELD = Report::STATUSES[6];
+    private const QUIET = Report::QUIET;
+    /** Server configuration: never quiet wherever it is, since it can make any file run as code. */
+    private const SERVER_CONFIG = ['.htaccess', '.htpasswd', '.user.ini', 'php.ini', 'web.config'];
 
     private $config;
     private $patterns;
@@ -86,7 +89,7 @@ final class Analyzer
      * @param array<string,string> $oldVersions stored plugin/theme versions
      * @param array<string,string> $newVersions versions currently on disk
      * @param int $now current unix time; with update_grace_seconds > 0, update-explainable findings for files that arrived within the grace period are deferred (held, not reported). 0 disables deferral
-     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[], detected: array<string,array{sha256:string,rules:string[],severity:int}>, resolved: array<string,bool>, outcomes: array<string,string>}
+     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[], detected: array<string,array{sha256:string,rules:string[],severity:int}>, resolved: array<string,bool>, outcomes: array<string,string>, quiet: string[]}
      */
     public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0): array
     {
@@ -107,6 +110,9 @@ final class Analyzer
             $unresolvedGroups[self::groupOf((string)$path, $this->config->nestedWordPress)] = true;
         }
         $outcomes = [];
+        $quiet = [];
+        /** @var array<string,bool> changed or new files that were not world-writable before and are now: never quiet */
+        $worldWritable = [];
         $dismissed = 0;
         $official = 0;
         $removed = 0;
@@ -253,6 +259,9 @@ final class Analyzer
                 $deferred++;
                 continue;
             }
+            if (($rec['mode'] & 0002) !== 0 && (((int)($c['old']['mode'] ?? 0)) & 0002) === 0) {
+                $worldWritable[$rel] = true;
+            }
             $queue[$rel] = $this->config->abs($rel);
             $queueHashes[$rel] = $hash;
             $groups[self::groupOf($rel, $this->config->nestedWordPress)][$rel] = $hash;
@@ -289,6 +298,8 @@ final class Analyzer
         foreach (array_keys($detected) as $rel) {
             $unresolvedGroups[self::groupOf((string)$rel, $this->config->nestedWordPress)] = true;
         }
+        // A ClamAV or YARA check that could not run is never taken as clean: nothing is quiet this run.
+        $externalFailed = $queue && $this->external->errors() !== [];
 
         foreach ($groups as $g => $files) {
             $g = (string)$g;
@@ -309,6 +320,34 @@ final class Analyzer
                     $outcomes[(string)$n] = self::APPROVED;
                 }
                 continue;
+            }
+            // Quiet: what nothing flagged is accepted without a finding where the site or folder asks
+            // for it. Never WordPress core (its checksums may just not have been downloadable), never
+            // a plugin or theme with a detection, never while a scanner failed, and never a plugin
+            // wordpress.org hosts or could not be asked about (its files did not verify). Nor a file
+            // that became world-writable (or arrived so) with this change.
+            $eligible = [];
+            if (!$suspect && !$externalFailed) {
+                foreach (array_keys($files) as $n) {
+                    $n = (string)$n;
+                    if ($this->config->isQuiet($n) && !$this->config->isCorePath($n) && !self::isServerConfig($n) && !isset($worldWritable[$n])) {
+                        $eligible[] = $n;
+                    }
+                }
+            }
+            // wordpress.org is asked only when something would be quiet: a site that is not quiet makes no extra requests.
+            if ($eligible && $this->quietAllowed($g, $old, $new)) {
+                foreach ($eligible as $n) {
+                    $outcomes[$n] = self::QUIET;
+                    $quiet[] = $n;
+                    unset($files[$n]);
+                }
+                if (!$files) {
+                    if ($bumped && !isset($versionHolds[$g])) { // not while part of the update is still being copied
+                        $info[] = sprintf('%s accepted quietly (%d file(s))', $g, count($eligible));
+                    }
+                    continue; // every changed file accepted: so is the update, and its version is recorded (once nothing of it is still being copied)
+                }
             }
             $names = array_map('strval', array_keys($files));
             // Keyed on the changed files' contents, so any further change while this waits for review alerts again.
@@ -348,7 +387,7 @@ final class Analyzer
             $crit = array_values(array_filter($findings, function (Finding $f) {
                 return $f->severity >= Finding::CRITICAL;
             }));
-            return ['findings' => $crit, 'info' => [], 'hold' => [], 'version_holds' => [], 'notes' => $notes, 'detected' => [], 'resolved' => [], 'outcomes' => []];
+            return ['findings' => $crit, 'info' => [], 'hold' => [], 'version_holds' => [], 'notes' => $notes, 'detected' => [], 'resolved' => [], 'outcomes' => [], 'quiet' => []];
         }
 
         if ($dismissed > 0) {
@@ -366,7 +405,7 @@ final class Analyzer
         // Only an update that is still waiting (for review, or for its copy to finish) keeps a
         // plugin's or theme's stored version. A file held for its own finding does not: freezing
         // the version then would let later edits pass as part of an update that was already done.
-        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'version_holds' => $versionHolds, 'notes' => $notes, 'detected' => $detected, 'resolved' => $resolved, 'outcomes' => $outcomes];
+        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'version_holds' => $versionHolds, 'notes' => $notes, 'detected' => $detected, 'resolved' => $resolved, 'outcomes' => $outcomes, 'quiet' => $quiet];
     }
 
     /**
@@ -409,6 +448,27 @@ final class Analyzer
             }
         }
         return $out;
+    }
+
+    private static function isServerConfig(string $rel): bool
+    {
+        return in_array(strtolower(basename($rel)), self::SERVER_CONFIG, true);
+    }
+
+    /**
+     * Quiet keeps the repository-plugin protection of auto-accept: a plugin's files reach the group
+     * step only when they did not verify, so a plugin wordpress.org publishes (before or after the
+     * change), or could not be asked about, is not quiet. Otherwise a fake Version header, or an
+     * outage of wordpress.org, would turn an edited repository plugin into a quiet change.
+     */
+    private function quietAllowed(string $group, ?string $old, ?string $new): bool
+    {
+        foreach (array_unique(array_filter([$old, $new], 'is_string')) as $version) {
+            if (!$this->confirmedNotRepositoryPlugin($group, $version)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

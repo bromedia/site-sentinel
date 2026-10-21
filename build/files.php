@@ -26,6 +26,7 @@ return [
     'State.php',
     'Lock.php',
     'AlertLog.php',
+    'QuietLog.php',
     'SelfCheck.php',
     'Dismissals.php',
     'Detections.php',

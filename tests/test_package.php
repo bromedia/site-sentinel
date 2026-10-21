@@ -92,6 +92,9 @@ function packagedSite(array $siteFiles = [], string $emailLine = 'email = owner@
     }
     file_put_contents($dir . '/sentinel.php', '<?php // stands in for the built script');
     $settings = (string)file_get_contents($dir . '/settings.txt');
+    if (strpos($emailLine, 'changed_files') !== false) { // the test sets it; the shipped line must not override it
+        $settings = str_replace("changed_files = tell me\n", '', $settings);
+    }
     file_put_contents($dir . '/settings.txt', str_replace('email = you@example.com', $emailLine, $settings));
     // Tests opt into the grace period explicitly; checksums need wordpress.org.
     $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
@@ -105,6 +108,27 @@ function runPackaged(string $dir, MailBox $mail, array $args = ['run']): array
     $r['text'] = implode("\n", array_merge($r['out'], $r['err']));
     return $r;
 }
+
+t('Settings: changed_files accepts tell me / quiet / yes / no and rejects anything else', function () {
+    $base = "email = a@b.example\n";
+    assertSame(null, Settings::parse($base)->quietChanges);
+    foreach (['tell me' => false, 'Quiet' => true, 'yes' => false, 'no' => true, 'QUIET' => true, 'Tell Me' => false] as $value => $quiet) {
+        $s = Settings::parse($base . "changed_files = $value\n");
+        assertSame($quiet, $s->quietChanges, $value);
+        $back = Settings::fromArray($s->toArray());
+        assertSame($quiet, $back->quietChanges, "round trip of $value");
+    }
+    assertSame('quiet', Settings::parse($base . "changed_files = quiet\n")->toArray()['changed_files']);
+    assertSame('tell me', Settings::parse($base . "changed_files = tell me\n")->toArray()['changed_files']);
+    assertSame(null, Settings::parse($base)->toArray()['changed_files']);
+    assertSame(null, Settings::fromArray(['emails' => ['a@b.example']])->quietChanges);
+    try {
+        Settings::parse($base . "changed_files = maybe\n");
+        throw new RuntimeException('accepted maybe');
+    } catch (Sentinel\SettingsException $e) {
+        assertContains('changed_files must be "tell me" or "quiet"', $e->getMessage());
+    }
+});
 
 t('Settings: name = value lines, validated with line numbers', function () {
     $s = Settings::parse("\xEF\xBB\xBF# notes\nemail = a@b.example, c@d.example\nemail = A@B.example\nwebsite = Shop\ncontact = Bro Media\napprove_plugin_updates_automatically = no\n");
@@ -1243,4 +1267,221 @@ t('run: the records-missing email names the baseline file relative to the home f
     foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
         assertNotContains($abs, $body, 'an absolute path was sent');
     }
+});
+
+function quietPackagedSite(MailBox $mail): array
+{
+    [, $www, $dir] = packagedSite([], "email = owner@client.example\nchanged_files = quiet");
+    runPackaged($dir, $mail); // setup and welcome
+    return [$www, $dir];
+}
+
+function editTheme(string $www, string $text): void
+{
+    $f = $www . '/wp-content/themes/Avada/functions.php';
+    file_put_contents($f, '<?php // ' . $text);
+    touch($f, time() + 5);
+    clearstatcache();
+}
+
+t('run: a quiet change writes a server report and sends no email', function () {
+    $mail = new MailBox();
+    [$www, $dir] = quietPackagedSite($mail);
+    editTheme($www, 'edited by the developer');
+    $r = runPackaged($dir, $mail);
+    assertSame(0, $r['exit'], $r['text']);
+    assertSame(1, count($mail->sent), 'only the welcome');
+    $kept = glob($dir . '/state/reports/sentinel-report-*.txt');
+    assertSame(1, count($kept), 'one report on the server');
+    $text = (string)file_get_contents($kept[0]);
+    assertContains('[accepted: quiet (no email)] wp-content/themes/Avada/functions.php', $text);
+    assertNotContains($dir, $text, 'no absolute paths');
+    assertSame('', $r['text'], 'nothing for the hosting panel to email');
+});
+
+t('run: the next alert\'s report lists what was accepted quietly since the last email, then the list starts again', function () {
+    $mail = new MailBox();
+    [$www, $dir] = quietPackagedSite($mail);
+    editTheme($www, 'first quiet edit');
+    runPackaged($dir, $mail);
+    assertSame(1, count($mail->sent));
+
+    mkdir($www . '/wp-content/uploads', 0755, true);
+    file_put_contents($www . '/wp-content/uploads/shell.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertSame(2, count($mail->sent), 'the PHP file in uploads is alerted');
+    $att = $mail->attachment(1);
+    assertTrue($att !== null, 'with its report');
+    assertContains("ACCEPTED QUIETLY SINCE THE LAST EMAIL (1)\nwp-content/themes/Avada (1)\n  wp-content/themes/Avada/functions.php | ", $att['content']);
+    assertNotContains($dir, $att['content'], 'no absolute paths');
+
+    // The list started again: a new quiet change, then another alert, lists only the newer one.
+    editTheme($www, 'second quiet edit, with other words');
+    file_put_contents($www . '/wp-content/themes/Avada/extra.php', '<?php // a new file');
+    touch($www . '/wp-content/themes/Avada/extra.php', time() + 6);
+    runPackaged($dir, $mail);
+    assertSame(2, count($mail->sent), 'quiet again');
+    file_put_contents($www . '/wp-content/uploads/shell2.php', '<?php // SENTINEL-TEST-MALWARE-MARKER two');
+    runPackaged($dir, $mail);
+    assertSame(3, count($mail->sent));
+    $att = $mail->attachment(2);
+    assertContains('ACCEPTED QUIETLY SINCE THE LAST EMAIL (2)', $att['content']);
+    assertContains('wp-content/themes/Avada/extra.php | ', $att['content']);
+    assertSame(1, substr_count($att['content'], "ACCEPTED QUIETLY SINCE THE LAST EMAIL"));
+    $section = substr($att['content'], (int)strpos($att['content'], 'ACCEPTED QUIETLY'));
+    $section = substr($section, 0, (int)strpos($section, "\n\n"));
+    assertNotContains('first quiet edit', $section);
+    assertSame(1, substr_count($section, 'functions.php'), 'only the second edit of functions.php, not the first');
+});
+
+t('changed-files: the welcome and the settings notice state the changed-files setting', function () {
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    $welcome = $mail->sent[0]['body'];
+    assertContains("\n  Changed files: you are told about every change that cannot be verified\n", $welcome);
+    assertNotContains('Recorded quietly in:', $welcome);
+
+    $mail = new MailBox();
+    [, , $dir] = packagedSite([], "email = owner@client.example\nchanged_files = quiet");
+    runPackaged($dir, $mail);
+    assertContains("\n  Changed files: recorded quietly unless they look like hacking\n", $mail->sent[0]['body']);
+    assertNotContains('you are told about every change', $mail->sent[0]['body']);
+
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['quiet_folders' => ['wp-content/themes/', 'blog/']]));
+    runPackaged($dir, $mail);
+    assertContains("\n  Changed files: you are told about every change that cannot be verified\n  Recorded quietly in: wp-content/themes/, blog/\n", $mail->sent[0]['body']);
+
+    // Changing the setting is announced like the others, in the previous setting's words.
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = tell me', 'changed_files = quiet', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    $notices = array_values(array_filter($mail->sent, function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    }));
+    assertSame(1, count($notices));
+    assertContains('  Changed files: quiet (was: tell me)', $notices[0]['body']);
+});
+
+t('changed-files: doctor shows the changed-files setting, quiet folders and the last quiet acceptance', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains("Changed files: tell me\n", $text);
+    assertNotContains('Quiet folders:', $text);
+    assertNotContains('Last accepted quietly:', $text);
+
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = tell me', 'changed_files = quiet', (string)file_get_contents($dir . '/settings.txt')));
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['quiet_folders' => ['blog/', 'wp-content/themes/']]));
+    $state = new Sentinel\State($dir . '/state');
+    $ts = gmmktime(9, 5, 7, 10, 20, 2026);
+    (new Sentinel\QuietLog($state))->add(['older.php'], $ts - 3600);
+    (new Sentinel\QuietLog($state))->add(['newer.php'], $ts);
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains("Changed files: quiet (changes that nothing flags are recorded without an email)\n", $text);
+    assertContains("Quiet folders: blog/, wp-content/themes/\n", $text);
+    assertContains("Last accepted quietly: 2026-10-20 09:05:07 UTC\n", $text);
+    assertNotContains('quiet will not apply', $text, 'no scanner configured');
+
+    // A scanner that is configured but cannot run switches quiet off for every run: doctor says so.
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['clamscan_path' => $dir . '/no-such-clamscan']));
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains('Quiet will not apply while a malware scanner that is set up cannot run (clamscan_path is set but ', $text);
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = quiet', 'changed_files = tell me', (string)file_get_contents($dir . '/settings.txt')));
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    unset($cfg['quiet_folders']);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg));
+    assertNotContains('Quiet will not apply', runPackaged($dir, $mail, ['doctor'])['text'], 'nothing is quiet, so nothing to say');
+});
+
+t('changed-files: the shipped settings.txt has item 5 and parses as tell me', function () {
+    $text = (string)file_get_contents(dirname(__DIR__) . '/package/settings.txt');
+    assertContains("# 5. Changes to the website's files that do not look like hacking: tell me or quiet\n", $text);
+    assertContains("#    tell me: every change that cannot be verified sends an email (safest).\n", $text);
+    assertContains("#    quiet:   such changes are recorded without an email; anything that looks like hacking,\n#             and changes to sensitive files, still send an email straight away.\nchanged_files = tell me\n", $text);
+    $s = Settings::parse(str_replace('you@example.com', 'owner@client.example', $text));
+    assertSame(false, $s->quietChanges);
+    assertSame('tell me', $s->toArray()['changed_files']);
+});
+
+t('changed-files: the first switch to quiet on an install set up before the setting existed is announced', function () {
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    // The stored last settings of an install from before this release have no changed_files key.
+    $state = new Sentinel\State($dir . '/state');
+    $stored = $state->readJson(Config::LAST_GOOD_SETTINGS);
+    assertTrue($stored !== [], 'settings were remembered');
+    unset($stored['changed_files']);
+    $state->writeJson(Config::LAST_GOOD_SETTINGS, $stored);
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = tell me', 'changed_files = quiet', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    $notices = array_values(array_filter($mail->sent, function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    }));
+    assertSame(1, count($notices));
+    assertContains('  Changed files: quiet (was: tell me)', $notices[0]['body']);
+    assertNotContains('only comments or formatting changed', $notices[0]['body']);
+});
+
+t('changed-files: doctor still shows the last quiet acceptance after an alert has cleared the list', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $state = new Sentinel\State($dir . '/state');
+    $ts = gmmktime(9, 5, 7, 10, 20, 2026);
+    (new Sentinel\QuietLog($state))->add(['older.php'], $ts);
+    (new Sentinel\QuietLog($state))->clear(); // as a delivered alert does
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains("Last accepted quietly: 2026-10-20 09:05:07 UTC\n", $text);
+});
+
+t('settings notice: an update policy line added where the stored settings had none is compared with the developer default', function () {
+    $line = "approve_plugin_updates_automatically = yes\n";
+    $cases = [
+        // [sentinel.json auto_accept_unverified_updates, line added, expected notice line]
+        'default, yes added' => [null, 'yes', '  Plugin and theme updates: approved automatically (was: each one reported for review)'],
+        'developer true, no added' => [true, 'no', '  Plugin and theme updates: each one reported for review (was: approved automatically)'],
+    ];
+    foreach ($cases as $label => [$dev, $added, $want]) {
+        $mail = new MailBox();
+        [, , $dir] = packagedSite();
+        $settings = (string)file_get_contents($dir . '/settings.txt');
+        assertContains($line, $settings, 'the shipped line');
+        file_put_contents($dir . '/settings.txt', str_replace($line, '', $settings));
+        if ($dev !== null) {
+            $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+            file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['auto_accept_unverified_updates' => $dev]));
+        }
+        runPackaged($dir, $mail); // setup: the stored settings have no update policy
+        assertSame(null, (new Sentinel\State($dir . '/state'))->readJson(Config::LAST_GOOD_SETTINGS)['approve_updates'] ?? null, $label);
+        file_put_contents($dir . '/settings.txt', (string)file_get_contents($dir . '/settings.txt') . "approve_plugin_updates_automatically = $added\n");
+        runPackaged($dir, $mail);
+        $notices = array_values(array_filter($mail->sent, function ($m) {
+            return strpos($m['subject'], 'settings changed') !== false;
+        }));
+        assertSame(1, count($notices), $label);
+        assertContains($want, $notices[0]['body'], $label);
+        assertNotContains('only comments or formatting changed', $notices[0]['body'], $label);
+    }
+
+    // The line removed again: the developer default applies, and the notice says so.
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/settings.txt', str_replace($line, '', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    $notices = array_values(array_filter($mail->sent, function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    }));
+    assertSame(1, count($notices));
+    assertContains('  Plugin and theme updates: each one reported for review (was: approved automatically)', $notices[0]['body']);
 });

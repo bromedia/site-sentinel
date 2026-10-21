@@ -80,9 +80,13 @@ final class Profile
                     'wp-content/backups/', 'wp-content/updraft/', 'wp-content/ai1wm-backups/',
                 ]),
                 'code_extensions' => $code,
+                // Drop-ins WordPress loads without them being activated count as sensitive.
                 'sensitive' => [
                     '/wp-config.php', '/.htaccess', 'wp-content/mu-plugins/**',
-                    '/wp-content/advanced-cache.php', '/wp-content/db.php', '/wp-content/object-cache.php', '.user.ini',
+                    '/wp-content/advanced-cache.php', '/wp-content/db.php', '/wp-content/object-cache.php',
+                    '/wp-content/sunrise.php', '/wp-content/maintenance.php', '/wp-content/fatal-error-handler.php',
+                    '/wp-content/php-error.php', '/wp-content/db-error.php', '/wp-content/install.php', '/wp-content/blog-*.php',
+                    '.user.ini',
                 ],
                 'uploads_dir' => 'wp-content/uploads',
             ];
