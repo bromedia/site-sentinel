@@ -14,6 +14,8 @@ final class Analyzer
     private const REMOVED = Report::STATUSES[5];
     private const HELD = Report::STATUSES[6];
     private const QUIET = Report::QUIET;
+    /** Server configuration: never quiet wherever it is, since it can make any file run as code. */
+    private const SERVER_CONFIG = ['.htaccess', '.htpasswd', '.user.ini', 'php.ini', 'web.config'];
 
     private $config;
     private $patterns;
@@ -322,7 +324,7 @@ final class Analyzer
             if (!$suspect && !$externalFailed) {
                 foreach (array_keys($files) as $n) {
                     $n = (string)$n;
-                    if ($this->config->isQuiet($n) && !$this->config->isCorePath($n)) {
+                    if ($this->config->isQuiet($n) && !$this->config->isCorePath($n) && !self::isServerConfig($n)) {
                         $eligible[] = $n;
                     }
                 }
@@ -335,10 +337,10 @@ final class Analyzer
                     unset($files[$n]);
                 }
                 if (!$files) {
-                    if ($bumped) {
+                    if ($bumped && !isset($versionHolds[$g])) { // not while part of the update is still being copied
                         $info[] = sprintf('%s accepted quietly (%d file(s))', $g, count($eligible));
                     }
-                    continue; // every changed file accepted: so is the update, and its version is recorded
+                    continue; // every changed file accepted: so is the update, and its version is recorded (once nothing of it is still being copied)
                 }
             }
             $names = array_map('strval', array_keys($files));
@@ -440,6 +442,11 @@ final class Analyzer
             }
         }
         return $out;
+    }
+
+    private static function isServerConfig(string $rel): bool
+    {
+        return in_array(strtolower(basename($rel)), self::SERVER_CONFIG, true);
     }
 
     /**

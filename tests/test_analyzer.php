@@ -768,3 +768,47 @@ t('Quiet: a site that is not quiet asks wordpress.org nothing more than before',
         assertSame($quietSite ? [] : ['unverified-update@wp-content/plugins/foo'], ruleList($r));
     }
 });
+
+t('Quiet: server configuration files are never quiet, wherever they are', function () {
+    $quiet = ['quiet_changes' => true];
+
+    // (a) An existing uploads .htaccess rewritten so that a harmless-looking extension runs as PHP.
+    [$root, $c, $b] = wpFixture(['wp-content/uploads/.htaccess' => "Options -Indexes\n"], $quiet);
+    bump($root, 'wp-content/uploads/.htaccess', "AddHandler application/x-httpd-php .txt\n");
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content'], ruleList($r));
+    assertSame(['wp-content/uploads/.htaccess' => Report::STATUSES[0]], $r['outcomes']);
+    assertSame([], $r['quiet']);
+
+    // (b) A new .htaccess in a plugin, and (c) a php.ini in a plugin folder; a plain file beside them stays quiet.
+    [$root, $c, $b] = wpFixture([], $quiet);
+    putFile($root, 'wp-content/plugins/foo/.htaccess', "AddHandler application/x-httpd-php .txt\n");
+    putFile($root, 'wp-content/plugins/foo/inc/PHP.INI', "auto_prepend_file = /tmp/x\n");
+    putFile($root, 'wp-content/plugins/foo/inc/ok.php', '<?php // ok');
+    $r = runAnalysis($c, $b, null, VersionTracker::read($c));
+    assertSame(['unexplained-change@wp-content/plugins/foo'], ruleList($r));
+    assertContains('2 file(s)', $r['findings'][0]->message);
+    assertSame([
+        'wp-content/plugins/foo/.htaccess' => Report::STATUSES[0],
+        'wp-content/plugins/foo/inc/PHP.INI' => Report::STATUSES[0],
+        'wp-content/plugins/foo/inc/ok.php' => Report::QUIET,
+    ], sortedOutcomes($r));
+    assertSame(['wp-content/plugins/foo/inc/ok.php'], $r['quiet']);
+});
+
+t('Quiet: no "accepted quietly" line while a file of the update is still being copied', function () {
+    [$root, $c, $b] = wpFixture(['wp-content/plugins/foo/inc/a.php' => '<?php // a'], ['quiet_changes' => true, 'update_grace_seconds' => 120]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', fooHeader('1.1', "// v2\n"));
+    bump($root, 'wp-content/plugins/foo/inc/a.php', '<?php // a, v2', 0);
+    $now = time();
+    $changes = diffByPath($c, $b);
+    // foo.php settled long ago (ctime cannot be set from PHP, so the record says so); a.php just arrived.
+    $changes['wp-content/plugins/foo/foo.php']['new']['mtime'] = $now - 600;
+    $changes['wp-content/plugins/foo/foo.php']['new']['ctime'] = $now - 600;
+    $r = analyzerFor($c)->analyze(array_values($changes), $old, VersionTracker::read($c), false, $now);
+    assertSame([], ruleList($r));
+    assertSame(['wp-content/plugins/foo/foo.php' => Report::QUIET, 'wp-content/plugins/foo/inc/a.php' => 'held: judged next run'], sortedOutcomes($r));
+    assertTrue(isset($r['version_holds']['wp-content/plugins/foo']));
+    assertNotContains('accepted quietly', implode("\n", $r['info']));
+});
