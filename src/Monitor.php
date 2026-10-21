@@ -253,6 +253,7 @@ final class Monitor
                         'version' => VERSION,
                         'mode' => $mode,
                         'complete' => $d['complete'],
+                        'resumed' => $startAfter !== '',
                         'nested' => $this->config->nestedWordPress,
                     ],
                     $findings,

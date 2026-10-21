@@ -287,3 +287,29 @@ try {
     assertSame('failed: cannot write report', $r['out']);
     assertSame([], glob($reports . '/*') ?: [], 'the partial file is removed');
 });
+
+t('Report: the final part of a resumed scan does not claim to be the complete scan', function () {
+    $part = 'part of a scan: changes found in this part only; the scan resumes on the next run';
+    $final = 'final part of a scan: the scan is now complete; this report covers this part only';
+    $one = [reportChange('new', 'x/a.php', null, reportRec())];
+
+    $text = reportText(reportMeta(['complete' => false, 'resumed' => true]), [], [], $one);
+    assertSame(2, substr_count($text, $part), 'not complete: the partial label, resumed or not');
+    assertNotContains('final part', $text);
+    assertNotContains('complete scan', $text);
+
+    $text = reportText(reportMeta(['complete' => true, 'resumed' => true]), [], [], $one);
+    assertContains('Coverage: ' . $final . "\n", $text);
+    assertContains('CHANGED FILES (1) - ' . $final . '; times are UTC', $text);
+    assertSame(2, substr_count($text, $final), 'header and changed-files heading');
+    assertNotContains('complete scan' . "\n", $text);
+    assertNotContains('Coverage: complete scan', $text);
+    assertNotContains('resumes on the next run', $text);
+
+    foreach ([['complete' => true, 'resumed' => false], ['complete' => true]] as $patch) {
+        $text = reportText(reportMeta($patch), [], [], $one);
+        assertContains('Coverage: complete scan', $text);
+        assertContains('CHANGED FILES (1) - complete scan; times are UTC', $text);
+        assertNotContains('final part', $text);
+    }
+});

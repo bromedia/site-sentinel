@@ -33,6 +33,7 @@ final class Report
     public const UNSAVED = 'pending: not saved (the record of website files could not be updated)';
 
     private const PARTIAL = 'part of a scan: changes found in this part only; the scan resumes on the next run';
+    private const FINAL = 'final part of a scan: the scan is now complete; this report covers this part only';
     private const COMPLETE = 'complete scan';
     private const PREFIX = 'sentinel-report-';
 
@@ -59,7 +60,7 @@ final class Report
      * minute is already there: never overwritten, never written through a planted link) and
      * prunes older copies.
      *
-     * @param array{site:string, root:string, ts:int, version:string, mode:string, complete:bool, nested?:string[], home?:string} $meta
+     * @param array{site:string, root:string, ts:int, version:string, mode:string, complete:bool, resumed?:bool, nested?:string[], home?:string} $meta
      *        root (the website folder) and home (the folder holding the sentinel folder) are only used
      *        to turn absolute paths in any line into relative ones
      * @param Finding[] $findings every finding of the run
@@ -130,7 +131,9 @@ final class Report
         $put = function (string $line) use ($fh, $scrub): void {
             self::writeAll($fh, Finding::line($scrub($line)) . "\n");
         };
-        $scope = !empty($meta['complete']) ? self::COMPLETE : self::PARTIAL;
+        // A scan that finished in this run is "complete" only when this run was all of it; the last
+        // slice of a resumed scan lists its own changes, not those reported by the earlier slices.
+        $scope = empty($meta['complete']) ? self::PARTIAL : (!empty($meta['resumed']) ? self::FINAL : self::COMPLETE);
 
         $put('Site Sentinel report: ' . $meta['site']);
         $put('Time: ' . gmdate('Y-m-d H:i:s', (int)$meta['ts']) . ' UTC');

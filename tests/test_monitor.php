@@ -638,3 +638,29 @@ t('Monitor: the error alert for a failed run shows no absolute path either', fun
     assertContains('sentinel/state/status.json', $n->sent[0]['body']);
     assertNotContains($home, $n->sent[0]['subject'] . $n->sent[0]['body']);
 });
+
+t('Monitor: the report of the final slice of a resumed scan says it covers that part only', function () {
+    [$root, , $state, $m, $n] = monitorFixture(['f1.txt' => '1', 'f2.txt' => '2', 'f3.txt' => '3', 'f4.txt' => '4', 'f5.txt' => '5']);
+    bump($root, 'f1.txt', 'one!'); // a clean change in the first slice: no alert
+    $t = 0.0;
+    $r = $m->run('check', new Budget(1.0, PHP_INT_MAX, function () use (&$t) { $t += 0.6; return $t; }));
+    assertContains('partial scan', $r['lines'][0]);
+    assertSame(0, count($n->sent), 'the first slice finds nothing to alert');
+    assertTrue(isset($state->readJson('resume.json')['check']), 'the scan resumes on the next run');
+
+    putFile($root, 'zz-evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER'); // after the cursor: found in the final slice
+    $r = $m->run('check'); // a full budget: the rest of the scan
+    assertContains('scan complete', $r['lines'][0]);
+    assertSame(1, count($n->sent));
+    $text = (string)$n->sent[0]['attachment']['content'];
+    $final = 'final part of a scan: the scan is now complete; this report covers this part only';
+    assertContains('Coverage: ' . $final, $text);
+    assertContains('CHANGED FILES (1) - ' . $final, $text);
+    assertNotContains('complete scan', $text);
+
+    // A scan that finishes in one run is still a complete scan.
+    [$root2, , , $m2, $n2] = monitorFixture(['f1.txt' => '1']);
+    putFile($root2, 'zz-evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    $m2->run('check');
+    assertContains('Coverage: complete scan', (string)$n2->sent[0]['attachment']['content']);
+});
