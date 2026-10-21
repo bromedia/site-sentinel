@@ -664,3 +664,27 @@ t('Monitor: the report of the final slice of a resumed scan says it covers that 
     $m2->run('check');
     assertContains('Coverage: complete scan', (string)$n2->sent[0]['attachment']['content']);
 });
+
+t('Monitor: quiet changes update the baseline and record the version, with no email', function () {
+    $files = [
+        'wp-config.php' => '<?php',
+        'wp-content/plugins/premium/premium.php' => "<?php\n/*\nPlugin Name: Premium\nVersion: 2.0\n*/\n",
+        'wp-content/themes/t/f.php' => '<?php // theme',
+    ];
+    [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false, 'quiet_changes' => true]);
+    $state->writeJson('versions.json', VersionTracker::read($config));
+    bump($root, 'wp-content/plugins/premium/premium.php', "<?php\n/*\nPlugin Name: Premium\nVersion: 2.1\n*/\nfunction premium_new() {}\n");
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited by the owner');
+    assertSame(0, $m->run('check')['exit']);
+    assertSame(0, count($n->sent));
+    assertSame(['wp-content/plugins/premium' => '2.1'], $state->readJson('versions.json'));
+    $baseline = (string)file_get_contents($state->path('baseline.txt'));
+    assertContains(hash_file('sha256', $root . '/wp-content/themes/t/f.php'), $baseline);
+    assertContains(hash_file('sha256', $root . '/wp-content/plugins/premium/premium.php'), $baseline);
+    assertContains('0 change(s)', $m->run('check')['lines'][0]);
+
+    // Something that looks like hacking still alerts on a quiet site.
+    putFile($root, 'wp-content/uploads/x.php', '<?php echo 1;');
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(1, count($n->sent));
+});

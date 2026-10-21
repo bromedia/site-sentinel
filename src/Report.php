@@ -27,10 +27,13 @@ final class Report
         'accepted: removed',
         'held: judged next run',
         self::UNSAVED,
+        self::QUIET,
     ];
 
     /** What an accepted change becomes when the record of website files could not be saved. */
     public const UNSAVED = 'pending: not saved (the record of website files could not be updated)';
+    /** A change nothing flagged, on a site or in a folder that asked not to be emailed about such changes. */
+    public const QUIET = 'accepted: quiet (no email)';
 
     private const PARTIAL = 'part of a scan: changes found in this part only; the scan resumes on the next run';
     private const FINAL = 'final part of a scan: the scan is now complete; this report covers this part only';
