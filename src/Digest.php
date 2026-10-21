@@ -28,6 +28,7 @@ final class Digest
         'unreadable-dir' => 'Fix the directory permissions so Sentinel can read it, or exclude it.',
         'config-in-uploads' => 'Server configuration in uploads can enable code execution. Inspect and remove it if it is not yours.',
         'exec-in-temp' => 'An executable appeared in a temp directory. Inspect it and find out which process created it.',
+        'detection-unresolved' => 'This file was reported as possible hacking and nobody has resolved that report. Review it; once it is clean (or confirmed harmless), run: php sentinel.php accept --path=<file or its plugin/theme directory>. Until then, its plugin or theme is not updated automatically.',
     ];
 
     /**
@@ -123,12 +124,14 @@ final class Digest
     public static function forClient(string $site, int $ts, array $findings, array $info, array $notes, string $contact): array
     {
         $who = $contact !== '' ? $contact : 'your web developer';
-        $groups = ['hack' => [], 'check' => [], 'changes' => [], 'monitoring' => []];
+        $groups = ['hack' => [], 'unresolved' => [], 'check' => [], 'changes' => [], 'monitoring' => []];
         $top = Finding::INFO;
         foreach ($findings as $f) {
             $top = max($top, $f->severity);
             if (in_array($f->rule, self::MONITORING, true)) {
                 $groups['monitoring'][] = $f;
+            } elseif ($f->rule === 'detection-unresolved') {
+                $groups['unresolved'][] = $f;
             } elseif (in_array($f->rule, self::CHANGES, true)) {
                 $groups['changes'][] = $f;
             } elseif ($f->severity >= Finding::CRITICAL) {
@@ -141,6 +144,8 @@ final class Digest
             $subject = "Security alert: $site may have been hacked";
         } elseif ($groups['monitoring']) {
             $subject = "Security monitoring problem on $site";
+        } elseif ($groups['unresolved']) {
+            $subject = "Please check: an earlier security alert on $site is not resolved";
         } elseif ($groups['check']) {
             $subject = "Please check: unusual files on $site";
         } else {
@@ -162,6 +167,15 @@ final class Digest
             $lines[] = "What to do: contact $who today and forward them this email.";
             $lines[] = "Please don't delete or change anything yourself: these files help";
             $lines[] = 'show how the attacker got in.';
+            $lines[] = '';
+        }
+        if ($groups['unresolved']) {
+            $lines[] = 'EARLIER ALERT NOT RESOLVED';
+            $lines[] = 'These files were reported as possible hacking before and have changed or been';
+            $lines[] = 'removed since, without anyone confirming the problem was dealt with:';
+            $lines = array_merge($lines, $paths($groups['unresolved']));
+            $lines[] = "What to do: forward this email to $who. Until they confirm, updates to";
+            $lines[] = 'the plugins or themes involved are not approved automatically.';
             $lines[] = '';
         }
         if ($groups['check']) {

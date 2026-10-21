@@ -266,7 +266,7 @@ t('Monitor: a held plugin group keeps its old stored version', function () {
     assertSame(['wp-content/plugins/foo' => '1.0'], $state->readJson('versions.json'));
 });
 
-t('Monitor: with auto-accept, a file held for its own finding does not freeze the plugin version, so later quiet edits still alert', function () {
+t('Monitor: with auto-accept, an update arriving with a detection in the same plugin waits for review with it, and later quiet edits still alert', function () {
     $files = [
         'wp-config.php' => '<?php',
         'wp-content/plugins/foo/foo.php' => "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\n// v1\n",
@@ -277,10 +277,22 @@ t('Monitor: with auto-accept, a file held for its own finding does not freeze th
     putFile($root, 'wp-content/plugins/foo/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER'); // stays held, alerting
     bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
     assertSame(1, $m->run('check')['exit']);
-    assertSame(['wp-content/plugins/foo' => '1.1'], $state->readJson('versions.json'), 'the accepted update is recorded');
+    assertContains('unverified-update', $n->sent[count($n->sent) - 1]['body'], 'not approved automatically');
+    assertSame(['wp-content/plugins/foo' => '1.0'], $state->readJson('versions.json'), 'files and version wait together');
+    assertNotContains(hash_file('sha256', $root . '/wp-content/plugins/foo/foo.php'), (string)file_get_contents($state->path('baseline.txt')), 'the 1.1 files are not accepted');
 
-    // A later edit with no version change is not part of that update.
+    // A later quiet edit alerts too.
+    $before = count($n->sent);
     bump($root, 'wp-content/plugins/foo/inc/helper.php', "<?php // helper, quietly edited\n");
+    assertSame(1, $m->run('check')['exit']);
+    assertTrue(count($n->sent) > $before);
+    assertContains('inc/helper.php', $n->sent[count($n->sent) - 1]['body']);
+
+    // Reviewed and accepted: the update is recorded, and the next quiet edit is not part of it.
+    assertTrue(isset((new \Sentinel\Detections($state))->all()['wp-content/plugins/foo/evil.php']), 'the detection is remembered until then');
+    \Sentinel\Accept::run($config, $state, ['wp-content/plugins/foo'], false, []);
+    assertSame(['wp-content/plugins/foo' => '1.1'], $state->readJson('versions.json'));
+    bump($root, 'wp-content/plugins/foo/inc/helper.php', "<?php // helper, quietly edited again\n", 200);
     $m->run('check');
     assertContains('unexplained-change', $n->sent[count($n->sent) - 1]['body']);
 });
@@ -315,7 +327,8 @@ t('Monitor: with auto-accept, a held fake version of a repository plugin is neve
         $hash = hash_file('sha256', $root . '/wp-content/plugins/foo/foo.php');
         $before = count($n->sent);
         assertSame(1, $m->run('check')['exit'], "$case: still reported");
-        assertContains('unverified-update', $n->sent[count($n->sent) - 1]['body'], $case);
+        // The rewritten version file is the file reported before; another file is an unverified update.
+        assertContains($payloadFile === 'foo.php' ? 'detection-unresolved' : 'unverified-update', $n->sent[count($n->sent) - 1]['body'], $case);
         assertTrue(count($n->sent) > $before, $case);
         assertNotContains($hash, (string)file_get_contents($state->path('baseline.txt')), "$case: not accepted into the baseline");
     }
