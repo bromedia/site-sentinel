@@ -12,6 +12,8 @@ final class QuietLog
 {
     public const FILE = 'quiet-log.json';
     public const CAP = 2000;
+    /** A larger file is not ours (the state folder is writable by anything on the account): it is not read. */
+    public const MAX_BYTES = 2097152;
 
     private $state;
     /** @var array<int,array{path:string,group:string,ts:int}> */
@@ -21,13 +23,29 @@ final class QuietLog
     public function __construct(State $state)
     {
         $this->state = $state;
-        $data = $state->readJson(self::FILE);
-        foreach ((array)($data['entries'] ?? []) as $e) {
-            if (is_array($e) && isset($e['path'], $e['group'], $e['ts'])) {
-                $this->entries[] = ['path' => (string)$e['path'], 'group' => (string)$e['group'], 'ts' => (int)$e['ts']];
+        // An oversized file is treated as empty (and replaced by the next save); the server reports
+        // still hold what was accepted.
+        $size = @filesize($state->path(self::FILE));
+        $data = $size !== false && $size > self::MAX_BYTES ? [] : $state->readJson(self::FILE);
+        $entries = $data['entries'] ?? [];
+        foreach (is_array($entries) ? $entries : [] as $e) {
+            if (is_array($e) && isset($e['path'], $e['group'], $e['ts']) && is_string($e['path']) && is_string($e['group']) && is_int($e['ts'])) {
+                $this->entries[] = ['path' => $e['path'], 'group' => $e['group'], 'ts' => $e['ts']];
             }
         }
-        $this->dropped = max(0, (int)($data['dropped'] ?? 0));
+        $d = $data['dropped'] ?? 0;
+        $this->dropped = is_int($d) ? max(0, $d) : 0;
+        $this->trim();
+    }
+
+    /** Keeps the newest CAP entries; the rest are counted as dropped. */
+    private function trim(): void
+    {
+        $extra = count($this->entries) - self::CAP;
+        if ($extra > 0) {
+            $this->entries = array_slice($this->entries, $extra);
+            $this->dropped += $extra;
+        }
     }
 
     /**
@@ -39,13 +57,13 @@ final class QuietLog
     public function add(array $paths, int $ts, array $nested = []): void
     {
         foreach ($paths as $path) {
-            $this->entries[] = ['path' => (string)$path, 'group' => Analyzer::groupOf((string)$path, $nested), 'ts' => $ts];
+            $path = (string)$path;
+            if (!preg_match('//u', $path)) { // a file name that is not UTF-8 must not make the log unwritable
+                $path = (string)preg_replace('/[^\x00-\x7F]/', '?', $path);
+            }
+            $this->entries[] = ['path' => $path, 'group' => Analyzer::groupOf($path, $nested), 'ts' => $ts];
         }
-        $extra = count($this->entries) - self::CAP;
-        if ($extra > 0) {
-            $this->entries = array_slice($this->entries, $extra);
-            $this->dropped += $extra;
-        }
+        $this->trim();
         $this->save();
     }
 

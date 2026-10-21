@@ -306,9 +306,10 @@ final class Monitor
             }
             if ($r['ok']) {
                 $sent = $due;
-                if ($attachment !== null) {
-                    // Delivered with the report that lists them: the list starts again. A failed send,
-                    // or a report that did not go with it, keeps the list for the next alert.
+                if ($attachment !== null && in_array('email', $r['delivered'], true)) {
+                    // Delivered by email with the report that lists them: the list starts again. A failed
+                    // send, a report that did not go with it, or only a channel that cannot carry the
+                    // file (it gets a pointer to the server copy) keeps the list for the next alert.
                     try {
                         $quietLog->clear();
                     } catch (\Throwable $e) {

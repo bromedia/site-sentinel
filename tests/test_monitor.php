@@ -11,7 +11,7 @@ use Sentinel\State;
 use Sentinel\VersionTracker;
 
 /** @return array{0:string,1:\Sentinel\Config,2:State,3:Monitor,4:FakeNotifier,5:FakeHttp,6:FakeClock} */
-function monitorFixture(array $files = [], array $cfg = [], array $self = []): array
+function monitorFixture(array $files = [], array $cfg = [], array $self = [], string $channelName = 'fake'): array
 {
     $root = tmpdir();
     foreach ($files as $rel => $content) {
@@ -21,7 +21,7 @@ function monitorFixture(array $files = [], array $cfg = [], array $self = []): a
     $state = new State($config->stateDir);
     snapshot($config, $state->path('baseline.txt'));
     (new \Sentinel\SelfCheck($state, $self))->record(); // as init does
-    $notifier = new FakeNotifier();
+    $notifier = new FakeNotifier($channelName);
     $http = new FakeHttp();
     $clock = new FakeClock();
     $m = new Monitor($config, $state, $http, [new Channel($notifier, Finding::WARNING)], $self, $clock);
@@ -720,7 +720,7 @@ t('Quiet: a report that cannot be written for a quiet-only run is not an error',
 });
 
 t('Quiet: the next alert lists what was accepted quietly; a failed send keeps the list, a delivered one starts it again', function () {
-    [$root, , $state, $m, $n, , $clock] = monitorFixture(['index.php' => '<?php', 'lib/a.php' => '<?php // a1', 'lib/b.php' => '<?php // b1'], ['quiet_changes' => true]);
+    [$root, , $state, $m, $n, , $clock] = monitorFixture(['index.php' => '<?php', 'lib/a.php' => '<?php // a1', 'lib/b.php' => '<?php // b1'], ['quiet_changes' => true], [], 'email');
     bump($root, 'lib/a.php', '<?php // a2');
     $m->run('check');
     $clock->t += 600;
@@ -776,4 +776,74 @@ t('Quiet: an alert whose report could not be saved still goes out and keeps the 
     assertSame(1, count($n->sent), 'the alert went out');
     assertContains('The full report could not be saved', $n->sent[0]['body']);
     assertSame(['lib/a.php'], array_column($state->readJson('quiet-log.json')['entries'], 'path'));
+});
+
+t('Quiet: the list is cleared only when the email carried it, not when another channel succeeded', function () {
+    [$root, $config, $state, , $email, $http, $clock] = monitorFixture(['index.php' => '<?php', 'lib/a.php' => '<?php // a1'], ['quiet_changes' => true], [], 'email');
+    $hook = new FakeNotifier('webhook');
+    $m = new Monitor($config, $state, $http, [new Channel($email, Finding::WARNING), new Channel($hook, Finding::WARNING)], [], $clock);
+    bump($root, 'lib/a.php', '<?php // a2');
+    putFile($root, 'wp-content/uploads/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    $email->fail = true;
+    $m->run('check');
+    assertSame(1, count($hook->sent), 'the other channel delivered');
+    assertSame(0, count($email->sent));
+    assertSame(['lib/a.php'], array_column($state->readJson('quiet-log.json')['entries'], 'path'), 'but no email carried the list');
+
+    $email->fail = false;
+    $clock->t += 86400 + 10;
+    $m->run('check'); // the held file reminds
+    assertSame(1, count($email->sent));
+    assertContains('lib/a.php | ', (string)$email->sent[0]['attachment']['content']);
+    assertSame([], $state->readJson('quiet-log.json')['entries']);
+
+    // An email below its severity is skipped: another channel alone does not clear it either.
+    bump($root, 'lib/a.php', '<?php // a3 with more words');
+    $clock->t += 600;
+    $m->run('check');
+    assertSame(['lib/a.php'], array_column($state->readJson('quiet-log.json')['entries'], 'path'), 'logged again');
+    $m2 = new Monitor($config, $state, $http, [new Channel($email, Finding::CRITICAL + 1), new Channel($hook, Finding::WARNING)], [], $clock);
+    $clock->t += 86400 + 10;
+    $before = count($email->sent);
+    $m2->run('check');
+    assertSame($before, count($email->sent), 'email skipped');
+    assertSame(['lib/a.php'], array_column($state->readJson('quiet-log.json')['entries'], 'path'));
+});
+
+t('Quiet log: an oversized, garbage or odd quiet-log.json never stops a run, and a long one is cut to the newest 2000', function () {
+    // 5,000 entries on file: the newest 2000 are kept and the rest counted.
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'lib/a.php' => '<?php // a1'], ['quiet_changes' => true]);
+    $entries = [];
+    for ($i = 1; $i <= 5000; $i++) {
+        $entries[] = ['path' => sprintf('old/f-%05d.php', $i), 'group' => 'old', 'ts' => 1700000000];
+    }
+    $state->writeJson('quiet-log.json', ['entries' => $entries, 'dropped' => 7]);
+    bump($root, 'lib/a.php', '<?php // a2');
+    assertSame(0, $m->run('check')['exit']);
+    $log = $state->readJson('quiet-log.json');
+    assertSame(2000, count($log['entries']));
+    assertSame(3007 + 1, $log['dropped']);
+    assertSame('lib/a.php', $log['entries'][1999]['path']);
+    assertSame('old/f-03002.php', $log['entries'][0]['path']);
+
+    // Garbage, and entries of the wrong shape, are ignored without a warning.
+    foreach (['not json at all {{{', json_encode(['entries' => 'x', 'dropped' => 'y']), json_encode(['entries' => [['path' => ['a'], 'group' => 'g', 'ts' => 1], 'string', ['path' => 'ok.php', 'group' => 'g', 'ts' => 5]], 'dropped' => [1]])] as $n => $content) {
+        file_put_contents($state->path('quiet-log.json'), $content);
+        $q = new Sentinel\QuietLog($state);
+        assertSame($n === 2 ? [['path' => 'ok.php', 'group' => 'g', 'ts' => 5]] : [], $q->pending()['entries']);
+        assertSame(0, $q->pending()['dropped']);
+    }
+
+    // A file above the size ceiling is not read: treated as empty, replaced by the next save, the run goes on.
+    file_put_contents($state->path('quiet-log.json'), str_repeat('x', Sentinel\QuietLog::MAX_BYTES + 1));
+    bump($root, 'lib/a.php', '<?php // a3 with more words');
+    assertSame(0, $m->run('check')['exit']);
+    $log = $state->readJson('quiet-log.json');
+    assertSame(['lib/a.php'], array_column($log['entries'], 'path'));
+    assertSame(0, $log['dropped']);
+
+    // A file name that is not UTF-8 is still logged.
+    $q = new Sentinel\QuietLog($state);
+    $q->add(["wp-content/themes/t/caf\xE9.php"], 1700000000);
+    assertSame('wp-content/themes/t/caf?.php', (new Sentinel\QuietLog($state))->pending()['entries'][1]['path']);
 });

@@ -41,7 +41,7 @@ final class Alerter
         }
     }
 
-    /** @return array{ok: bool, results: string[], attempted: int} */
+    /** @return array{ok: bool, results: string[], attempted: int, delivered: string[]} delivered: names of the channels that sent it */
     public function send(string $subject, string $body, int $topSeverity, ?array $attachment = null): array
     {
         if ($this->scrub !== null) {
@@ -58,6 +58,7 @@ final class Alerter
         $results = [];
         $attempted = 0;
         $succeeded = 0;
+        $delivered = [];
         foreach ($this->channels as $ch) {
             if ($topSeverity < $ch->minSeverity) {
                 continue;
@@ -67,10 +68,11 @@ final class Alerter
                 $ch->notifier->send($subject, $body, $topSeverity, $attachment);
                 $results[] = $ch->notifier->name() . ': sent';
                 $succeeded++;
+                $delivered[] = $ch->notifier->name();
             } catch (\Throwable $e) {
                 $results[] = $ch->notifier->name() . ': FAILED - ' . $e->getMessage();
             }
         }
-        return ['ok' => $attempted === 0 || $succeeded > 0, 'results' => $results, 'attempted' => $attempted];
+        return ['ok' => $attempted === 0 || $succeeded > 0, 'results' => $results, 'attempted' => $attempted, 'delivered' => $delivered];
     }
 }
