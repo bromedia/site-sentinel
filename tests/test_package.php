@@ -1265,3 +1265,68 @@ t('run: the records-missing email names the baseline file relative to the home f
         assertNotContains($abs, $body, 'an absolute path was sent');
     }
 });
+
+function quietPackagedSite(MailBox $mail): array
+{
+    [, $www, $dir] = packagedSite([], "email = owner@client.example\nchanged_files = quiet");
+    runPackaged($dir, $mail); // setup and welcome
+    return [$www, $dir];
+}
+
+function editTheme(string $www, string $text): void
+{
+    $f = $www . '/wp-content/themes/Avada/functions.php';
+    file_put_contents($f, '<?php // ' . $text);
+    touch($f, time() + 5);
+    clearstatcache();
+}
+
+t('run: a quiet change writes a server report and sends no email', function () {
+    $mail = new MailBox();
+    [$www, $dir] = quietPackagedSite($mail);
+    editTheme($www, 'edited by the developer');
+    $r = runPackaged($dir, $mail);
+    assertSame(0, $r['exit'], $r['text']);
+    assertSame(1, count($mail->sent), 'only the welcome');
+    $kept = glob($dir . '/state/reports/sentinel-report-*.txt');
+    assertSame(1, count($kept), 'one report on the server');
+    $text = (string)file_get_contents($kept[0]);
+    assertContains('[accepted: quiet (no email)] wp-content/themes/Avada/functions.php', $text);
+    assertNotContains($dir, $text, 'no absolute paths');
+    assertSame('', $r['text'], 'nothing for the hosting panel to email');
+});
+
+t('run: the next alert\'s report lists what was accepted quietly since the last email, then the list starts again', function () {
+    $mail = new MailBox();
+    [$www, $dir] = quietPackagedSite($mail);
+    editTheme($www, 'first quiet edit');
+    runPackaged($dir, $mail);
+    assertSame(1, count($mail->sent));
+
+    mkdir($www . '/wp-content/uploads', 0755, true);
+    file_put_contents($www . '/wp-content/uploads/shell.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertSame(2, count($mail->sent), 'the PHP file in uploads is alerted');
+    $att = $mail->attachment(1);
+    assertTrue($att !== null, 'with its report');
+    assertContains("ACCEPTED QUIETLY SINCE THE LAST EMAIL (1)\nwp-content/themes/Avada (1)\n  wp-content/themes/Avada/functions.php | ", $att['content']);
+    assertNotContains($dir, $att['content'], 'no absolute paths');
+
+    // The list started again: a new quiet change, then another alert, lists only the newer one.
+    editTheme($www, 'second quiet edit, with other words');
+    file_put_contents($www . '/wp-content/themes/Avada/extra.php', '<?php // a new file');
+    touch($www . '/wp-content/themes/Avada/extra.php', time() + 6);
+    runPackaged($dir, $mail);
+    assertSame(2, count($mail->sent), 'quiet again');
+    file_put_contents($www . '/wp-content/uploads/shell2.php', '<?php // SENTINEL-TEST-MALWARE-MARKER two');
+    runPackaged($dir, $mail);
+    assertSame(3, count($mail->sent));
+    $att = $mail->attachment(2);
+    assertContains('ACCEPTED QUIETLY SINCE THE LAST EMAIL (2)', $att['content']);
+    assertContains('wp-content/themes/Avada/extra.php | ', $att['content']);
+    assertSame(1, substr_count($att['content'], "ACCEPTED QUIETLY SINCE THE LAST EMAIL"));
+    $section = substr($att['content'], (int)strpos($att['content'], 'ACCEPTED QUIETLY'));
+    $section = substr($section, 0, (int)strpos($section, "\n\n"));
+    assertNotContains('first quiet edit', $section);
+    assertSame(1, substr_count($section, 'functions.php'), 'only the second edit of functions.php, not the first');
+});

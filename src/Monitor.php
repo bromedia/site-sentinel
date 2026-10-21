@@ -232,6 +232,31 @@ final class Monitor
             );
         }
 
+        // What was accepted quietly is remembered for the next alert's report, but only once the
+        // baseline holds it: a failed save accepted nothing. A log that cannot be written must not
+        // stop the alert or the run.
+        $quietLog = new QuietLog($this->state);
+        if ($a['quiet'] && !$saveFailed) {
+            try {
+                $quietLog->add($a['quiet'], $now, $this->config->nestedWordPress);
+            } catch (\Throwable $e) {
+                // the entries stay in memory for this run's report
+            }
+        }
+        $meta = [
+            'site' => $this->config->siteName,
+            'root' => $this->config->siteRoot,
+            'home' => $this->config->accountHome,
+            'folders' => [$this->sentinelParent()],
+            'ts' => $now,
+            'version' => VERSION,
+            'mode' => $mode,
+            'complete' => $d['complete'],
+            'resumed' => $startAfter !== '',
+            'nested' => $this->config->nestedWordPress,
+        ];
+        $outcomes = $saveFailed ? self::unsaved($a['outcomes']) : $a['outcomes'];
+
         $log = new AlertLog($this->state);
         $due = $log->due($findings, $now, $this->config->remindHours * 3600);
         $alertLines = [];
@@ -245,25 +270,15 @@ final class Monitor
             try {
                 $file = Report::write(
                     $this->state->path('reports'),
-                    [
-                        'site' => $this->config->siteName,
-                        'root' => $this->config->siteRoot,
-                        'home' => $this->config->accountHome,
-                        'folders' => [$this->sentinelParent()],
-                        'ts' => $now,
-                        'version' => VERSION,
-                        'mode' => $mode,
-                        'complete' => $d['complete'],
-                        'resumed' => $startAfter !== '',
-                        'nested' => $this->config->nestedWordPress,
-                    ],
+                    $meta,
                     $findings,
                     array_map(function (Finding $f): string {
                         return $f->key();
                     }, $due),
                     $d['changes'],
-                    $saveFailed ? self::unsaved($a['outcomes']) : $a['outcomes'],
-                    $a['notes']
+                    $outcomes,
+                    $a['notes'],
+                    $quietLog->pending()
                 );
             } catch (\Throwable $e) {
                 // An alert without its report beats no alert: say why, and send it anyway.
@@ -291,6 +306,22 @@ final class Monitor
             }
             if ($r['ok']) {
                 $sent = $due;
+                if ($attachment !== null) {
+                    // Delivered with the report that lists them: the list starts again. A failed send,
+                    // or a report that did not go with it, keeps the list for the next alert.
+                    try {
+                        $quietLog->clear();
+                    } catch (\Throwable $e) {
+                        // listed again next time rather than lost
+                    }
+                }
+            }
+        } elseif ($a['quiet'] && !$saveFailed) {
+            // Nothing to email, but a quiet acceptance is never untraceable: the server keeps its report.
+            try {
+                Report::write($this->state->path('reports'), $meta, $findings, [], $d['changes'], $outcomes, $a['notes']);
+            } catch (\Throwable $e) {
+                // a record that could not be saved must not turn a quiet run into an error
             }
         }
         $log->commit($findings, $sent, $now);

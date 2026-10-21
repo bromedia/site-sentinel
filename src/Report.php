@@ -72,9 +72,12 @@ final class Report
      * @param array[] $changes Differ::diff()['changes']
      * @param array<string,string> $outcomes path => one of STATUSES
      * @param string[] $notes
+     * @param array{entries?: array<int,array{path:string,group:string,ts:int}>, dropped?: int} $quietSince
+     *        what was accepted quietly since the last email (QuietLog::pending()); listed in its own
+     *        section when there are entries
      * @return string the file written
      */
-    public static function write(string $dir, array $meta, array $findings, array $dueKeys, array $changes, array $outcomes, array $notes): string
+    public static function write(string $dir, array $meta, array $findings, array $dueKeys, array $changes, array $outcomes, array $notes, array $quietSince = []): string
     {
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new \RuntimeException("cannot create report folder");
@@ -92,7 +95,7 @@ final class Report
         }
         @chmod($file, 0600);
         try {
-            self::stream($fh, $meta, $findings, array_flip($dueKeys), $changes, $outcomes, $notes);
+            self::stream($fh, $meta, $findings, array_flip($dueKeys), $changes, $outcomes, $notes, $quietSince);
         } catch (\Throwable $e) {
             @fclose($fh);
             @unlink($file);
@@ -129,7 +132,7 @@ final class Report
     }
 
     /** @param resource $fh */
-    private static function stream($fh, array $meta, array $findings, array $due, array $changes, array $outcomes, array $notes): void
+    private static function stream($fh, array $meta, array $findings, array $due, array $changes, array $outcomes, array $notes, array $quietSince): void
     {
         $scrub = self::pathScrubber((string)($meta['root'] ?? ''), (string)($meta['home'] ?? ''), ...array_map('strval', (array)($meta['folders'] ?? [])));
         $put = function (string $line) use ($fh, $scrub): void {
@@ -176,6 +179,26 @@ final class Report
         }
         if (!$findings) {
             $put('  none');
+            $put('');
+        }
+
+        // Before the (possibly very long) list of changes, so a cut attachment still has it.
+        $quietGroups = [];
+        foreach ((array)($quietSince['entries'] ?? []) as $e) {
+            $quietGroups[(string)$e['group']][] = $e;
+        }
+        if ($quietGroups) {
+            uksort($quietGroups, [PathOrder::class, 'compare']);
+            $put('ACCEPTED QUIETLY SINCE THE LAST EMAIL (' . count((array)$quietSince['entries']) . ')');
+            foreach ($quietGroups as $group => $entries) {
+                $put((string)$group . ' (' . count($entries) . ')');
+                foreach ($entries as $e) {
+                    $put('  ' . $e['path'] . ' | ' . gmdate('Y-m-d H:i', (int)$e['ts']) . ' UTC');
+                }
+            }
+            if ((int)($quietSince['dropped'] ?? 0) > 0) {
+                $put('(' . (int)$quietSince['dropped'] . ' earlier not listed)');
+            }
             $put('');
         }
 

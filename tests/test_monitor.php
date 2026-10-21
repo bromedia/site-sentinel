@@ -688,3 +688,92 @@ t('Monitor: quiet changes update the baseline and record the version, with no em
     assertSame(1, $m->run('check')['exit']);
     assertSame(1, count($n->sent));
 });
+
+t('Quiet: a quiet-only run writes a server report, sends nothing and records the change in the quiet log', function () {
+    [$root, , $state, $m, $n, , $clock] = monitorFixture(['index.php' => '<?php', 'lib/helper.php' => '<?php // v1'], ['quiet_changes' => true]);
+    bump($root, 'lib/helper.php', '<?php // v2, edited by the owner');
+    $r = $m->run('check');
+    assertSame(0, $r['exit'], implode("\n", $r['lines']));
+    assertSame(0, count($n->sent), 'no email');
+    $reports = glob($state->path('reports') . '/sentinel-report-*.txt');
+    assertSame(1, count($reports));
+    $text = (string)file_get_contents($reports[0]);
+    assertContains('[accepted: quiet (no email)] lib/helper.php', $text);
+    assertNotContains('ACCEPTED QUIETLY', $text, 'the list is for the next alert');
+    $log = $state->readJson('quiet-log.json');
+    assertSame([['path' => 'lib/helper.php', 'group' => 'lib', 'ts' => $clock->t]], $log['entries']);
+    assertSame(0, $log['dropped']);
+
+    $m->run('check');
+    assertSame(1, count(glob($state->path('reports') . '/sentinel-report-*.txt')), 'a run with nothing quiet writes no report');
+    assertSame(1, count($state->readJson('quiet-log.json')['entries']));
+});
+
+t('Quiet: a report that cannot be written for a quiet-only run is not an error', function () {
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'lib/helper.php' => '<?php // v1'], ['quiet_changes' => true]);
+    file_put_contents($state->path('reports'), 'in the way'); // a file where the folder should be
+    bump($root, 'lib/helper.php', '<?php // v2');
+    $r = $m->run('check');
+    assertSame(0, $r['exit'], implode("\n", $r['lines']));
+    assertSame(0, count($n->sent));
+    assertSame(1, count($state->readJson('quiet-log.json')['entries']), 'still logged');
+});
+
+t('Quiet: the next alert lists what was accepted quietly; a failed send keeps the list, a delivered one starts it again', function () {
+    [$root, , $state, $m, $n, , $clock] = monitorFixture(['index.php' => '<?php', 'lib/a.php' => '<?php // a1', 'lib/b.php' => '<?php // b1'], ['quiet_changes' => true]);
+    bump($root, 'lib/a.php', '<?php // a2');
+    $m->run('check');
+    $clock->t += 600;
+    putFile($root, 'wp-content/uploads/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    $n->fail = true;
+    $m->run('check');
+    assertSame(0, count($n->sent), 'the send failed');
+    assertSame(1, count($state->readJson('quiet-log.json')['entries']), 'so the list is kept for the next attempt');
+
+    $n->fail = false;
+    $clock->t += 600;
+    $m->run('check');
+    assertSame(1, count($n->sent));
+    $text = (string)$n->sent[0]['attachment']['content'];
+    assertContains("ACCEPTED QUIETLY SINCE THE LAST EMAIL (1)\nlib (1)\n  lib/a.php | ", $text);
+    assertSame([], $state->readJson('quiet-log.json')['entries'], 'delivered, so the list starts again');
+
+    $clock->t += 600;
+    bump($root, 'lib/b.php', '<?php // b2');
+    $m->run('check');
+    assertSame(1, count($n->sent), 'quiet again, still no email');
+    assertSame(1, count($state->readJson('quiet-log.json')['entries']));
+    $clock->t += 86400;
+    $m->run('check'); // the held file reminds after a day
+    assertSame(2, count($n->sent));
+    $text = (string)$n->sent[1]['attachment']['content'];
+    assertContains('ACCEPTED QUIETLY SINCE THE LAST EMAIL (1)', $text);
+    assertContains('lib/b.php | ', $text);
+    assertNotContains('lib/a.php | ', $text);
+});
+
+t('Quiet: a failed baseline save logs nothing as quiet and shows pending', function () {
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'lib/helper.php' => '<?php // v1'], ['quiet_changes' => true]);
+    bump($root, 'lib/helper.php', '<?php // v2');
+    if (!failNextWrite($state->path('baseline.txt'))) {
+        skip('/dev/full or symlinks unavailable');
+    }
+    $m->run('check');
+    assertSame(1, count($n->sent), 'the failed save is itself alerted');
+    $text = (string)$n->sent[0]['attachment']['content'];
+    assertContains('[pending: not saved (the record of website files could not be updated)] lib/helper.php', $text);
+    assertNotContains('accepted: quiet', $text);
+    assertNotContains('ACCEPTED QUIETLY', $text);
+    assertSame([], $state->readJson('quiet-log.json'), 'nothing was logged');
+});
+
+t('Quiet: an alert whose report could not be saved still goes out and keeps the quiet list for the next one', function () {
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'lib/a.php' => '<?php // a1'], ['quiet_changes' => true]);
+    file_put_contents($state->path('reports'), 'in the way');
+    bump($root, 'lib/a.php', '<?php // a2');
+    putFile($root, 'wp-content/uploads/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    $m->run('check');
+    assertSame(1, count($n->sent), 'the alert went out');
+    assertContains('The full report could not be saved', $n->sent[0]['body']);
+    assertSame(['lib/a.php'], array_column($state->readJson('quiet-log.json')['entries'], 'path'));
+});
