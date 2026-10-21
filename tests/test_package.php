@@ -196,6 +196,83 @@ t('run: a welcome email that could not be sent is retried, without setting up ag
     assertSame(1, count($mail->sent), 'and only once');
 });
 
+t('run: setup with a flagged file sends the report with the welcome, also on a retry', function () {
+    $flagged = ['wp-content/uploads/x.php' => '<?php eval($_POST["c"]);'];
+    $welcomeIndex = function (MailBox $mail): int {
+        foreach ($mail->sent as $i => $m) {
+            if (strpos($m['subject'], 'is now protecting') !== false) {
+                return $i;
+            }
+        }
+        throw new RuntimeException('no welcome sent: ' . implode(' | ', $mail->subjects()));
+    };
+
+    // Delivered at once: the report lists the flagged file, and nothing in the email or report is an absolute path.
+    [$home, , $dir] = packagedSite($flagged);
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $att = $mail->attachment(0);
+    assertTrue($att !== null, 'the setup email carries the report');
+    assertContains('wp-content/uploads/x.php', $att['content'], 'the flagged file is listed');
+    assertContains('Scan mode: setup', $att['content']);
+    assertTrue(is_file($dir . '/state/reports/' . $att['name']), 'a copy is kept on the server');
+    assertNotContains($home, $att['content'] . $mail->sent[0]['body'], 'no absolute path is sent');
+    assertNotContains('could not be', $mail->sent[0]['body']);
+    assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'delivered, so nothing is waiting');
+
+    // Mail down at setup: the retry carries the same report, from the server copy.
+    [, , $dir] = packagedSite($flagged);
+    $mail = new MailBox();
+    $mail->failing = true;
+    runPackaged($dir, $mail);
+    $pending = json_decode((string)file_get_contents($dir . '/state/welcome-pending.json'), true);
+    assertTrue(is_file((string)$pending['report']), 'the pending welcome points at the saved report');
+    $mail->failing = false;
+    runPackaged($dir, $mail);
+    $att = $mail->attachment($welcomeIndex($mail));
+    assertTrue($att !== null, 'the retried welcome carries the report');
+    assertSame(basename((string)$pending['report']), $att['name']);
+    assertContains('wp-content/uploads/x.php', $att['content']);
+
+    // The server copy gone before the retry: sent without it, and says so, above the footer.
+    [, , $dir] = packagedSite($flagged);
+    $mail = new MailBox();
+    $mail->failing = true;
+    runPackaged($dir, $mail);
+    $pending = json_decode((string)file_get_contents($dir . '/state/welcome-pending.json'), true);
+    unlink((string)$pending['report']);
+    $mail->failing = false;
+    runPackaged($dir, $mail);
+    $i = $welcomeIndex($mail);
+    assertSame(null, $mail->attachment($i), 'nothing to attach');
+    $body = $mail->sent[$i]['body'];
+    assertContains('The full report could not be attached.', $body);
+    assertNotContains($dir, $body);
+    assertTrue(strpos($body, 'The full report could not be attached.') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
+    assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'and it is not retried again');
+
+    // The report cannot be saved: setup completes and the email goes out, saying why.
+    [, , $dir] = packagedSite($flagged);
+    mkdir($dir . '/state', 0700);
+    file_put_contents($dir . '/state/reports', 'in the way');
+    $mail = new MailBox();
+    $r = runPackaged($dir, $mail);
+    assertTrue(is_file($dir . '/state/baseline.txt'), 'setup still completes');
+    assertSame(1, $r['exit']);
+    assertSame(null, $mail->attachment(0));
+    $body = $mail->sent[0]['body'];
+    assertContains('The full report could not be saved: ', $body);
+    assertNotContains($dir, $body);
+    assertTrue(strpos($body, 'could not be saved') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
+
+    // A clean setup has no report.
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    assertSame(null, $mail->attachment(0));
+    assertTrue(!is_dir($dir . '/state/reports'), 'no report was written');
+});
+
 t('run: no baseline and no marker is reported, never silently re-baselined', function () {
     [, , $dir] = packagedSite();
     $mail = new MailBox();

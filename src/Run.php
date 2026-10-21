@@ -77,7 +77,22 @@ final class Run
         if (!isset($w['subject'], $w['body'])) {
             return ['ok' => true, 'lines' => []];
         }
-        $r = (new Alerter($channels))->send((string)$w['subject'], (string)$w['body'], Finding::CRITICAL);
+        $body = (string)$w['body'];
+        $attachment = null;
+        if (isset($w['report'])) {
+            // The report was saved at setup; every try (the first included) re-reads that copy.
+            try {
+                $file = (string)$w['report'];
+                if (dirname($file) !== $state->path('reports')) {
+                    throw new \RuntimeException('not a saved report');
+                }
+                $attachment = Report::attachment($file, Report::displayPath($state->dir(), basename($file)));
+            } catch (\Throwable $e) {
+                // The welcome is also the test that alerts arrive: it goes out anyway, and says so.
+                $body = self::withNote($body, 'The full report could not be attached.');
+            }
+        }
+        $r = (new Alerter($channels))->send((string)$w['subject'], $body, Finding::CRITICAL, $attachment);
         $ok = $r['attempted'] > 0 && strpos(implode("\n", $r['results']), 'FAILED') === false;
         if ($ok) {
             @unlink($state->path(self::WELCOME));
@@ -249,7 +264,27 @@ final class Run
             $body = self::withFooter($body, $config->contact, $developer);
             // Kept until it has gone out, and retried on later runs; the setup itself is not redone.
             $subject = $flagged ? "Security alert: Site Sentinel is now protecting $site and found possible hacking" : "Site Sentinel is now protecting $site";
-            $state->writeJson(self::WELCOME, ['subject' => $subject, 'body' => self::text($body)]);
+            $pending = ['subject' => $subject, 'body' => self::text($body)];
+            if ($flagged) {
+                // The full record of what was found goes with the email, and stays on the server.
+                try {
+                    $pending['report'] = Report::write(
+                        $state->path('reports'),
+                        ['site' => $site, 'root' => $config->siteRoot, 'ts' => $now, 'version' => VERSION, 'mode' => 'setup', 'complete' => true, 'nested' => $config->nestedWordPress],
+                        $scan['findings'],
+                        array_map(function (Finding $f): string {
+                            return $f->key();
+                        }, $scan['findings']),
+                        [],
+                        [],
+                        $notes
+                    );
+                } catch (\Throwable $e) {
+                    // Setup and the welcome do not depend on the report.
+                    $pending['body'] = self::withNote($pending['body'], 'The full report could not be saved: ' . self::plainReason($config, $state, $e));
+                }
+            }
+            $state->writeJson(self::WELCOME, $pending);
             $w = self::sendWelcome($state, $channels);
             // Recorded as reported, so "dismiss <id>" works from this email and the daily reminders
             // start from now. If the email did not go out, the next check alerts them itself.
@@ -527,6 +562,20 @@ final class Run
     private static function policy(bool $auto): string
     {
         return $auto ? 'approved automatically' : 'each one reported for review';
+    }
+
+    /** The owner-facing part of a welcome gets the note, above the footer and the developer details. */
+    private static function withNote(string $body, string $note): string
+    {
+        return Digest::withReportNote(rtrim($body, "\n"), $note, true) . "\n";
+    }
+
+    /** Why something failed, without the hosting account's absolute paths. */
+    private static function plainReason(Config $config, State $state, \Throwable $e): string
+    {
+        $site = rtrim($config->siteRoot, '/');
+        $text = str_replace([$state->dir() . '/', $state->dir(), $site . '/', $site], ['', 'state', '', '.'], $e->getMessage());
+        return trim(Finding::line($text));
     }
 
     /** @param string[] $lines */
