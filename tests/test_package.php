@@ -211,7 +211,8 @@ t('run: setup ignores a rules.json nobody vouches for', function () {
     $mail = new MailBox();
     $r = runPackaged($dir, $mail);
     assertSame(1, $r['exit'], 'the built-in rules still found the backdoor');
-    assertSame(['Security alert: setup found possible hacking on My website'], $mail->subjects());
+    assertSame(['Security alert: Site Sentinel is now protecting My website and found possible hacking'], $mail->subjects());
+    assertNotContains('shell.php', (string)file_get_contents($dir . '/state/baseline.txt'));
 });
 
 t('run: a marker left beside a working install is removed, not used to re-baseline', function () {
@@ -253,18 +254,94 @@ t('run: setup refuses to start inside the web root, and says so once a day, not 
     assertTrue(!is_file($dir . '/state/baseline.txt'));
 });
 
-t('run: setup on an already infected site alerts, keeps the marker, and finishes once it is clean', function () {
+t('run: setup on an already infected site watches the rest, keeps the flagged file out of the baseline and keeps reporting it', function () {
     [, $www, $dir] = packagedSite(['wp-content/uploads/x.php' => '<?php eval($_POST["c"]);']);
     $mail = new MailBox();
     $r = runPackaged($dir, $mail);
-    assertSame(1, $r['exit']);
-    assertSame(['Security alert: setup found possible hacking on My website'], $mail->subjects());
-    assertContains('wp-content/uploads/x.php', $mail->sent[0]['body']);
-    assertTrue(is_file($dir . '/' . Run::MARKER));
-    assertTrue(!is_file($dir . '/state/baseline.txt'));
-    unlink($www . '/wp-content/uploads/x.php');
+    assertSame(1, $r['exit'], $r['text']);
+    assertSame(['Security alert: Site Sentinel is now protecting My website and found possible hacking'], $mail->subjects());
+    $body = $mail->sent[0]['body'];
+    assertContains('  - wp-content/uploads/x.php', $body);
+    assertContains('not recorded as normal', $body);
+    assertContains('Files recorded: 5', $body, 'the flagged file is not counted');
+    assertContains('test that alerts reach you', $body);
+    assertNotContains('php sentinel.php', $body, 'client emails never show commands');
+    assertTrue(strpos($body, 'not recorded as normal') < strpos($body, 'Technical details'));
+    assertTrue(preg_match('/php-in-uploads wp-content\/uploads\/x\.php: .* \[id ([0-9a-f]{12})\]/', $body, $m) === 1, $body);
+    assertTrue(!is_file($dir . '/' . Run::MARKER), 'setup is finished');
+    $baseline = (string)file_get_contents($dir . '/state/baseline.txt');
+    assertNotContains('uploads/x.php', $baseline, 'nothing flagged enters the baseline');
+    assertContains('wp-content/themes/Avada/functions.php', $baseline);
+
+    // The rest of the site is watched: a change no pattern catches is still reported, by name.
+    file_put_contents($www . '/wp-content/themes/Avada/functions.php', "<?php include __DIR__ . '/cache.dat';");
+    touch($www . '/wp-content/themes/Avada/functions.php', time() + 5);
+    clearstatcache();
+    $n = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertContains('wp-content/themes/Avada/functions.php', implode("\n", array_column($mail->since($n), 'body')));
+    runPackaged($dir, $mail, ['accept', '--path=wp-content/themes/Avada/functions.php']);
+
+    // The flagged file is reported again once the daily reminder is due.
+    $log = json_decode((string)file_get_contents($dir . '/state/alerts.json'), true);
+    foreach ($log as $k => $e) {
+        $log[$k]['alerted'] = (int)$e['alerted'] - 90000;
+    }
+    file_put_contents($dir . '/state/alerts.json', json_encode($log));
+    $n = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertContains('wp-content/uploads/x.php', implode("\n", array_column($mail->since($n), 'body')), 'still reported');
+
+    // Reviewed as harmless: dismissed by the id from the setup email, then accepted.
+    $d = runPackaged($dir, $mail, ['dismiss', $m[1], '--reason=test fixture']);
+    assertSame(0, $d['exit'], $d['text']);
+    runPackaged($dir, $mail, ['accept', '--path=wp-content/uploads/x.php']);
+    $n = count($mail->sent);
     assertSame(0, runPackaged($dir, $mail)['exit']);
-    assertSame('Site Sentinel is now protecting My website', end($mail->sent)['subject']);
+    assertSame([], $mail->since($n), 'quiet once reviewed');
+});
+
+t('run: a plugin with a file flagged at setup is not vouched for by its version, so a later fake bump is still reported', function () {
+    $header = function (string $v): string {
+        return "<?php\n/*\nPlugin Name: Evil\nVersion: $v\n*/\n";
+    };
+    $payload = "\$_GET['f'](\$_GET['a']);\n";
+    $quiet = "include __DIR__ . '/../../uploads/cache.dat';\n";
+    // The flagged file declares the version, or is another file of the same plugin; an ordinary run
+    // in between must not record the version either.
+    foreach (['evil.php' => [$header('1.0.9') . $payload, null], 'inc.php' => [$header('1.0.9'), '<?php ' . $payload]] as $flagged => [$main, $inc]) {
+        $files = ['wp-content/plugins/evil/evil.php' => $main];
+        if ($inc !== null) {
+            $files['wp-content/plugins/evil/inc.php'] = $inc;
+        }
+        [, $www, $dir] = packagedSite($files);
+        $mail = new MailBox();
+        assertSame(1, runPackaged($dir, $mail)['exit']);
+        runPackaged($dir, $mail);
+        $versions = json_decode((string)file_get_contents($dir . '/state/versions.json'), true);
+        assertTrue(!isset($versions['wp-content/plugins/evil']), "$flagged: no trusted version for a plugin with a flagged file");
+        assertSame('7.11.9', $versions['wp-content/themes/Avada'] ?? null, 'other versions are still recorded');
+
+        // The detected code is swapped for code no pattern catches, and the version raised.
+        file_put_contents($www . '/wp-content/plugins/evil/evil.php', $header('1.0.10') . ($inc === null ? $quiet : ''));
+        if ($inc !== null) {
+            file_put_contents($www . '/wp-content/plugins/evil/inc.php', '<?php ' . $quiet);
+        }
+        foreach (glob($www . '/wp-content/plugins/evil/*.php') as $f) {
+            touch($f, time() - 600);
+        }
+        clearstatcache();
+        $n = count($mail->sent);
+        $r = runPackaged($dir, $mail);
+        assertSame(1, $r['exit'], "$flagged: " . $r['text']);
+        assertContains('wp-content/plugins/evil', implode("\n", array_column($mail->since($n), 'body')), "$flagged: reported");
+        assertNotContains("wp-content/plugins/evil/$flagged\t", (string)file_get_contents($dir . '/state/baseline.txt'), "$flagged: not accepted");
+
+        // Once reviewed and accepted, the plugin's version is tracked again.
+        runPackaged($dir, $mail, ['accept', '--path=wp-content/plugins/evil']);
+        runPackaged($dir, $mail);
+        assertSame('1.0.10', json_decode((string)file_get_contents($dir . '/state/versions.json'), true)['wp-content/plugins/evil'] ?? null, "$flagged: tracked after review");
+    }
 });
 
 t('run: a comment-only PHP stub in uploads ("Silence is golden") does not block setup; code there still does', function () {
@@ -302,6 +379,42 @@ t('run: a file name cannot add its own text to an alert', function () {
     $body = end($mail->sent)['body'];
     assertNotContains("\nUPDATE: Bro Media", $body);
     assertContains('%0A%0AUPDATE: Bro Media', $body);
+});
+
+t('doctor before setup: a state folder not created yet is fine, and setup is pending, not "run init"', function () {
+    [, , $dir] = packagedSite();
+    @rmdir($dir . '/state');
+    $r = runPackaged($dir, new MailBox(), ['doctor']);
+    assertContains('OK: state directory does not exist yet; the first run creates it', $r['text']);
+    assertContains('WARN: not set up yet: SETUP-PENDING.txt is present, so the next scheduled run sets Sentinel up', $r['text']);
+    assertNotContains('run init', $r['text']);
+    assertNotContains('ERROR: writable state directory', $r['text']);
+    assertTrue(!is_dir($dir . '/state'), 'doctor stays read-only');
+
+    // Once set up, a missing baseline with a marker put back is not "pending": run refuses that.
+    runPackaged($dir, new MailBox());
+    unlink($dir . '/state/baseline.txt');
+    file_put_contents($dir . '/' . Run::MARKER, 'again');
+    $r = runPackaged($dir, new MailBox(), ['doctor']);
+    assertContains('ERROR: baseline missing', $r['text']);
+    assertNotContains('not set up yet', $r['text']);
+
+    if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        return; // root can write anywhere
+    }
+    // A state folder that exists but cannot be written is still an error.
+    [, , $dir] = packagedSite();
+    @mkdir($dir . '/state');
+    chmod($dir . '/state', 0500);
+    $r = runPackaged($dir, new MailBox(), ['doctor']);
+    chmod($dir . '/state', 0700);
+    assertContains('ERROR: writable state directory', $r['text']);
+    // And one that cannot be created at all.
+    rmdir($dir . '/state');
+    chmod($dir, 0500);
+    $r = runPackaged($dir, new MailBox(), ['doctor']);
+    chmod($dir, 0755);
+    assertContains('ERROR: state directory does not exist and cannot be created', $r['text']);
 });
 
 t('run: a packaged sentinel.php started without arguments does its scheduled job', function () {
@@ -457,6 +570,159 @@ t('Client alerts are plain language with the contact, no commands, technical det
     assertNotContains('php sentinel.php', $m['body']);
     assertContains('Technical details for your web developer', $m['body']);
     assertTrue(strpos($m['body'], 'POSSIBLE HACK') < strpos($m['body'], 'Technical details'));
+});
+
+t('INSTALL-XNEELO.txt says a timeout on the Run screen is normal, and what a security-alert welcome means', function () {
+    $text = (string)file_get_contents(dirname(__DIR__) . '/package/INSTALL-XNEELO.txt');
+    assertContains('may stop after about 90 seconds with a timeout message. That is normal', $text);
+    assertContains('If the subject starts with "Security alert"', $text);
+    foreach (explode("\n", $text) as $i => $line) {
+        assertTrue(strlen($line) <= 96, 'line ' . ($i + 1) . ' fits a plain-text editor: ' . $line);
+    }
+});
+
+/** A plain site (not WordPress at its root) with WordPress installs in subfolders. */
+function nestedWordPressSite(): array
+{
+    [$home, $www, $dir] = packagedSite();
+    foreach (['wp-config.php', 'wp-includes/version.php', 'wp-content/themes/Avada/style.css', 'wp-content/themes/Avada/functions.php'] as $f) {
+        unlink($www . '/' . $f);
+    }
+    foreach (['wp-includes', 'wp-content/themes/Avada', 'wp-content/themes', 'wp-content'] as $d) {
+        rmdir($www . '/' . $d);
+    }
+    foreach (['books/', 'shop/', 'shop/dev/'] as $p) {
+        putFile($www, $p . 'wp-config.php', "<?php define('DB_NAME', 'x');");
+        putFile($www, $p . 'wp-includes/version.php', "<?php\n\$wp_version = '6.4.2';\n");
+        putFile($www, $p . 'wp-content/plugins/shop/shop.php', "<?php\n/*\nPlugin Name: Shop\nVersion: 1.0\n*/\n");
+        putFile($www, $p . 'wp-content/uploads/2026/photo.jpg', 'jpg');
+    }
+    putFile($www, 'books/wp-content/cache/page.php', '<?php // cached page');
+    // Not installs: inside an install's wp-content, and deeper than three levels.
+    putFile($www, 'books/wp-content/plugins/demo/wp-config.php', '<?php');
+    putFile($www, 'a/b/c/d/wp-config.php', '<?php');
+    return [$home, $www, $dir];
+}
+
+t('WordPress in subfolders gets the WordPress path rules: uploads, wp-config.php, cache folders, per-plugin grouping', function () {
+    [, $www, $dir] = nestedWordPressSite();
+    $mail = new MailBox();
+    $doc = runPackaged($dir, $mail, ['doctor']);
+    assertContains('WordPress in subfolders: books, shop, shop/dev.', $doc['text']);
+    assertContains('its own core checksums and plugin or theme updates', $doc['text']);
+    assertSame(0, runPackaged($dir, $mail)['exit']);
+    assertNotContains('books/wp-content/cache/', (string)file_get_contents($dir . '/state/baseline.txt'), 'cache folders are excluded');
+
+    $change = function (string $rel, string $content) use ($www, $dir, $mail): string {
+        putFile($www, $rel, $content);
+        touch($www . '/' . $rel, time() + 5);
+        clearstatcache();
+        $r = runPackaged($dir, $mail, ['check']);
+        runPackaged($dir, $mail, ['accept', '--path=' . $rel]);
+        return $r['text'];
+    };
+    assertContains('CRITICAL shop/dev/wp-content/uploads/2026/thumb.php php-in-uploads', $change('shop/dev/wp-content/uploads/2026/thumb.php', '<?php echo 1;'));
+    assertContains('WARNING books/wp-config.php sensitive-file-changed', $change('books/wp-config.php', "<?php define('DB_NAME', 'changed-value');"));
+    assertContains('WARNING books/wp-content/plugins/shop unexplained-change', $change('books/wp-content/plugins/shop/extra.php', '<?php // added'));
+    $quiet = $change('books/wp-content/cache/page.php', '<?php // a newer cached page');
+    assertContains('0 change(s)', $quiet);
+});
+
+t('run: the welcome email names WordPress in subfolders, says what was checked, and keeps the heartbeat optional', function () {
+    $welcome = function (string $dir, FakeHttp $http): string {
+        $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+        file_put_contents($dir . '/sentinel.json', json_encode(['wp_checksums' => true] + $cfg));
+        $mail = new MailBox();
+        Cli::execute(['run'], $dir . '/sentinel.php', $http, $mail->mailer());
+        assertSame(1, count($mail->sent), implode(' / ', $mail->subjects()));
+        return $mail->sent[0]['body'];
+    };
+    [, , $dir] = nestedWordPressSite();
+    $http = new FakeHttp();
+    coreRoute($http, ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n"]);
+    $body = $welcome($dir, $http);
+    assertContains('WordPress: 3 sites in subfolders (books, shop, shop/dev), each checked against the official WordPress checksums', $body);
+    assertContains('Plugin and theme updates: approved automatically', $body);
+    assertContains('Optional: no heartbeat is set.', $body);
+
+    [, , $dir] = nestedWordPressSite();
+    $body = $welcome($dir, new FakeHttp()); // wordpress.org unreachable
+    assertContains('WordPress: 3 sites in subfolders (books, shop, shop/dev), but the official WordPress checksums could not be downloaded for books, shop, shop/dev', $body);
+    assertNotContains('checked against the official', $body);
+
+    [, $www, $dir] = packagedSite();
+    foreach (['wp-config.php', 'wp-includes/version.php'] as $f) {
+        unlink($www . '/' . $f);
+    }
+    $body = $welcome($dir, new FakeHttp());
+    assertContains('WordPress: not detected', $body);
+    assertNotContains('Plugin and theme updates', $body, 'no WordPress, no update policy to describe');
+});
+
+t('WordPress in subfolders: a configured exclude or sensitive list replaces the defaults there too; nothing is written back', function () {
+    [, $www] = nestedWordPressSite();
+    $base = ['site_name' => 's', 'site_root' => $www, 'state_dir' => tmpdir() . '/state', 'channels' => [['type' => 'file', 'path' => tmpdir() . '/a.log']]];
+    $c = Config::fromArray($base);
+    assertSame(['books', 'shop', 'shop/dev'], $c->nestedWordPress);
+    assertTrue(in_array('/books/wp-content/cache/', $c->exclusions(), true));
+    assertTrue(in_array('/shop/dev/wp-config.php', $c->sensitivePatterns(), true));
+    assertTrue($c->isUploads('books/wp-content/uploads/x.php') && !$c->isUploads('books/wp-content/plugins/x.php'));
+    assertSame('generic', $c->profile);
+    $written = $c->toArray();
+    assertTrue(!isset($written['exclude']) && !isset($written['sensitive']), 'defaults, detected or not, are not written as a configured list');
+
+    $c = Config::fromArray($base + ['exclude' => ['*.log'], 'sensitive' => ['/.htaccess']]);
+    assertTrue(!in_array('/books/wp-content/cache/', $c->exclusions(), true));
+    assertSame(['/.htaccess'], $c->sensitivePatterns());
+    assertTrue($c->isUploads('books/wp-content/uploads/x.php'), 'uploads are always checked');
+    // An excluded folder is not searched for installs.
+    $c = Config::fromArray($base + ['exclude' => ['shop/']]);
+    assertSame(['books'], $c->nestedWordPress);
+});
+
+t('WordPress in subfolders: a config saved through toArray (as init writes it) keeps the subfolder defaults when loaded again', function () {
+    [, $www] = nestedWordPressSite();
+    $base = ['site_name' => 's', 'site_root' => $www, 'state_dir' => tmpdir() . '/state', 'channels' => [['type' => 'file', 'path' => tmpdir() . '/a.log']]];
+    $c = Config::fromArray($base);
+    $again = Config::fromArray(json_decode((string)json_encode($c->toArray()), true));
+    assertSame($c->exclusions(), $again->exclusions());
+    assertSame($c->sensitivePatterns(), $again->sensitivePatterns());
+    assertTrue(in_array('/books/wp-content/cache/', $again->exclusions(), true));
+    assertTrue(in_array('/books/wp-config.php', $again->sensitivePatterns(), true));
+    // A configured list is still written, and still replaces the defaults after a round trip.
+    $c = Config::fromArray($base + ['exclude' => ['*.log'], 'sensitive' => ['/.htaccess']]);
+    $again = Config::fromArray(json_decode((string)json_encode($c->toArray()), true));
+    assertSame(['*.log'], $again->toArray()['exclude']);
+    assertSame(['/.htaccess'], $again->sensitivePatterns());
+});
+
+t('run: a package unzipped into an extra folder (site-sentinel/sentinel/) still finds public_html, and doctor says so', function () {
+    $shipped = json_decode((string)file_get_contents(dirname(__DIR__) . '/package/sentinel.json'), true);
+    assertSame(Config::PACKAGE_SITE_ROOT, $shipped['site_root']);
+    [$home, $www, $dir] = packagedSite();
+    mkdir($home . '/site-sentinel');
+    rename($dir, $home . '/site-sentinel/sentinel');
+    $dir = $home . '/site-sentinel/sentinel';
+    $mail = new MailBox();
+    $r = runPackaged($dir, $mail);
+    assertSame(0, $r['exit'], $r['text']);
+    assertContains('Website folder: ' . realpath($www), $mail->sent[0]['body']);
+    $doc = runPackaged($dir, $mail, ['doctor']);
+    assertContains('WARN: site root found one folder further up than sentinel.json says', $doc['text']);
+    assertContains('check that the cron command points at ' . $dir . '/sentinel.php', $doc['text']);
+
+    // Only the shipped value falls back: a site_root someone set is used as written.
+    [$home, , $dir] = packagedSite();
+    mkdir($home . '/x');
+    rename($dir, $home . '/x/sentinel');
+    $dir = $home . '/x/sentinel';
+    file_put_contents($dir . '/sentinel.json', json_encode(['site_root' => '../public_ssl', 'state_dir' => 'state', 'settings_file' => 'settings.txt', 'audience' => 'client']));
+    mkdir($home . '/public_ssl');
+    assertContains('site_root must be an existing directory', runPackaged($dir, new MailBox())['text']);
+    // And it never applies when ../public_html is there.
+    [, , $dir] = packagedSite();
+    $doc = runPackaged($dir, new MailBox(), ['doctor']);
+    assertNotContains('further up', $doc['text']);
 });
 
 t('build/package.php produces the sentinel folder ZIP with everything an install needs', function () {

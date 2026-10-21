@@ -321,6 +321,80 @@ t('Monitor: with auto-accept, a held fake version of a repository plugin is neve
     }
 });
 
+t('Monitor: a held fake version is not recorded when the scan resumes across runs either', function () {
+    $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\nfunction foo() {}\n";
+    $files = ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n", 'wp-content/plugins/foo/foo.php' => $v1];
+    for ($i = 1; $i <= 8; $i++) {
+        $files["wp-content/themes/t/f$i.txt"] = (string)$i;
+    }
+    [$root, $config, $state, $m, , $http] = monitorFixture($files, ['profile' => 'wordpress', 'auto_accept_unverified_updates' => true, 'update_grace_seconds' => 0]);
+    $state->writeJson('versions.json', VersionTracker::read($config));
+    coreRoute($http, ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n"]);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/1.0.json', 200, json_encode(['files' => ['foo.php' => ['sha256' => hash('sha256', $v1)]]]));
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/', 404, '{"error":"not found"}');
+    putFile($root, 'wp-content/plugins/foo/foo.php', str_replace('Version: 1.0', 'Version: 1.0.9', $v1) . "// SENTINEL-TEST-MALWARE-MARKER\n");
+    touch($root . '/wp-content/plugins/foo/foo.php', time() - 600);
+    clearstatcache();
+    $runs = 0;
+    do {
+        $t = 0.0;
+        $r = $m->run('check', new Budget(1.0, PHP_INT_MAX, function () use (&$t) { $t += 0.6; return $t; }));
+        $runs++;
+    } while (strpos($r['lines'][0], 'partial scan') !== false && $runs < 20);
+    assertTrue($runs > 2, 'the scan resumed across runs');
+    assertSame('1.0', $state->readJson('versions.json')['wp-content/plugins/foo'] ?? null, 'the held fake version is not recorded');
+    assertSame([], $state->readJson('resume.json'), 'nothing carried over once the scan is complete');
+});
+
+t('Monitor: a plugin left unvouched at setup gets no version when the scan that holds its file resumes across runs', function () {
+    $header = function (string $v): string {
+        return "<?php\n/*\nPlugin Name: Evil\nVersion: $v\n*/\n";
+    };
+    $payload = "\$_GET['f'](\$_GET['a']);\n";
+    $quiet = "include __DIR__ . '/../../uploads/cache.dat';\n";
+    $filler = [];
+    for ($i = 1; $i <= 8; $i++) {
+        $filler["wp-content/themes/t/f$i.txt"] = (string)$i; // sorts after the plugin: later slices
+    }
+    foreach (['version file' => 'evil.php', 'another file' => 'inc.php'] as $case => $flagged) {
+        $files = ['wp-config.php' => '<?php'] + $filler;
+        if ($flagged === 'inc.php') {
+            $files['wp-content/plugins/evil/evil.php'] = $header('1.0.9');
+        }
+        [$root, $config, $state, $m, $n] = monitorFixture($files, ['profile' => 'wordpress', 'wp_checksums' => false, 'auto_accept_unverified_updates' => true, 'update_grace_seconds' => 0]);
+        // As a partial setup leaves it: the flagged file is not in the baseline and the plugin has no version.
+        putFile($root, 'wp-content/plugins/evil/evil.php', $header('1.0.9') . ($flagged === 'evil.php' ? $payload : ''));
+        if ($flagged === 'inc.php') {
+            putFile($root, 'wp-content/plugins/evil/inc.php', '<?php ' . $payload);
+        }
+        $state->writeJson('versions.json', []);
+
+        $runs = 0;
+        do {
+            $t = 0.0;
+            $budget = new Budget(1.0, PHP_INT_MAX, function () use (&$t) { $t += 0.6; return $t; });
+            $r = $m->run('check', $budget);
+            $partial = strpos($r['lines'][0], 'partial scan') !== false;
+            $runs++;
+        } while ($partial && $runs < 20);
+        assertTrue($runs > 2, "$case: the scan resumed across runs");
+        assertSame([], $state->readJson('versions.json'), "$case: no version while the flagged file is held");
+
+        file_put_contents($root . "/wp-content/plugins/evil/evil.php", $header('1.0.10') . ($flagged === 'evil.php' ? $quiet : ''));
+        if ($flagged === 'inc.php') {
+            file_put_contents($root . '/wp-content/plugins/evil/inc.php', '<?php ' . $quiet);
+        }
+        foreach (glob($root . '/wp-content/plugins/evil/*.php') as $f) {
+            touch($f, time() - 600);
+        }
+        clearstatcache();
+        $before = count($n->sent);
+        assertSame(1, $m->run('check')['exit'], $case);
+        assertTrue(count($n->sent) > $before, "$case: reported");
+        assertNotContains("wp-content/plugins/evil/$flagged\t", (string)file_get_contents($state->path('baseline.txt')), "$case: not accepted into the baseline");
+    }
+});
+
 t('Monitor: an unreadable directory is reported', function () {
     if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
         skip('root can read everything');

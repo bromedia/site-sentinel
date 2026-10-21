@@ -95,7 +95,7 @@ final class Monitor
         $resume = $this->state->readJson('resume.json');
         $startAfter = (string)($resume[$mode] ?? '');
 
-        $wpOn = $this->config->profile === 'wordpress';
+        $wpOn = $this->config->hasWordPress();
         $wp = $wpOn && $this->config->wpChecksums ? new WpChecksum($this->http, $this->config, $this->state->path('cache')) : null;
         $analyzer = new Analyzer(
             $this->config,
@@ -137,10 +137,25 @@ final class Monitor
                 Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
             }
 
+            // What holds back a plugin's version, gathered over the whole traversal: a scan that
+            // resumes across runs sees a held file in one slice and records versions in the last.
+            $holdsKey = $mode . '-holds';
+            $carried = $startAfter !== '' ? (array)($resume[$holdsKey] ?? []) : [];
+            $versionHolds = array_fill_keys((array)($carried['update'] ?? []), true) + $a['version_holds'];
+            $heldGroups = array_fill_keys((array)($carried['held'] ?? []), true);
+            $heldVersionFiles = array_fill_keys((array)($carried['version_file'] ?? []), true);
+            foreach (array_keys($a['hold']) as $path) {
+                $g = Analyzer::groupOf((string)$path, $this->config->nestedWordPress);
+                $heldGroups[$g] = true;
+                if (VersionTracker::versionFile($this->config, $g) === (string)$path) {
+                    $heldVersionFiles[$g] = true;
+                }
+            }
             if ($d['complete']) {
-                unset($resume[$mode]);
+                unset($resume[$mode], $resume[$holdsKey]);
             } else {
                 $resume[$mode] = $d['stopped_at'];
+                $resume[$holdsKey] = ['update' => array_keys($versionHolds), 'held' => array_keys($heldGroups), 'version_file' => array_keys($heldVersionFiles)];
             }
             $this->state->writeJson('resume.json', $resume);
             if ($d['complete'] && $wpOn) {
@@ -150,9 +165,12 @@ final class Monitor
                     // waits for review or its copy, and not while the file that declares the
                     // version is itself held. Recording an unaccepted version would lose where
                     // the plugin came from (a wordpress.org release), so a later fake bump could
-                    // pass as a premium update.
-                    $file = VersionTracker::versionFile($this->config, (string)$g);
-                    if (!isset($a['version_holds'][$g]) && ($file === null || !isset($a['hold'][$file]))) {
+                    // pass as a premium update. A plugin with no recorded version yet (one with a
+                    // file flagged at setup) gets none while any of its files is held, or a later
+                    // bump would vouch for the flagged file. A held file does not freeze a version
+                    // already recorded: later quiet edits would then pass as that update.
+                    $unvouched = !isset($oldVersions[$g]) && isset($heldGroups[$g]);
+                    if (!isset($versionHolds[$g]) && !isset($heldVersionFiles[$g]) && !$unvouched) {
                         $store[$g] = $v;
                     } elseif (isset($oldVersions[$g])) {
                         $store[$g] = $oldVersions[$g];

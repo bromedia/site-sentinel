@@ -20,9 +20,10 @@ final class WpChecksum
     private $cacheDir;
     /** @var array<string,string> */
     private $notes = [];
-    private $coreLoaded = false;
-    /** @var array<string,string>|null */
-    private $core = null;
+    /** @var array<string,?array<string,string>> install folder ('' = website folder) => official core checksums */
+    private $core = [];
+    /** @var array<string,?array<string,string>> "version-locale" => checksums, fetched once for every install on that release */
+    private $coreReleases = [];
     /** @var array<string,?array> */
     private $plugins = [];
     /** @var array<string,string> slug@version => RELEASE_* */
@@ -41,36 +42,54 @@ final class WpChecksum
         return array_values($this->notes);
     }
 
-    /** Whether official core checksums were obtained (null: no core file was looked up). */
+    /** Whether official core checksums were obtained for the website folder (null: no core file was looked up). */
     public function coreVerified(): ?bool
     {
-        return $this->coreLoaded ? $this->core !== null : null;
+        return array_key_exists('', $this->core) ? $this->core[''] !== null : null;
+    }
+
+    /** @return array<string,bool> install folder => whether official core checksums were obtained, for installs looked up */
+    public function coreVerifiedByInstall(): array
+    {
+        return array_map(function ($m) {
+            return $m !== null;
+        }, $this->core);
     }
 
     public function isCorePath(string $rel): bool
     {
-        $core = $this->coreMap();
-        if ($core !== null) {
-            return isset($core[$rel]);
+        $in = $this->config->wordpressInstallOf($rel);
+        if ($in === null) {
+            return false;
         }
-        return strpos($rel, 'wp-admin/') === 0 || strpos($rel, 'wp-includes/') === 0;
+        [$prefix, $local] = $in;
+        $core = $this->coreMap($prefix);
+        if ($core !== null) {
+            return isset($core[$local]);
+        }
+        return strpos($local, 'wp-admin/') === 0 || strpos($local, 'wp-includes/') === 0;
     }
 
     public function verify(string $rel): string
     {
+        $in = $this->config->wordpressInstallOf($rel);
+        if ($in === null) {
+            return self::UNKNOWN; // not part of any WordPress install
+        }
+        [$prefix, $local] = $in;
         $abs = $this->config->abs($rel);
-        $core = $this->coreMap();
-        if ($core !== null && isset($core[$rel])) {
+        $core = $this->coreMap($prefix);
+        if ($core !== null && isset($core[$local])) {
             $md5 = @md5_file($abs);
             if ($md5 === false) {
                 return self::UNKNOWN;
             }
-            return $md5 === $core[$rel] ? self::VERIFIED : self::MISMATCH;
+            return $md5 === $core[$local] ? self::VERIFIED : self::MISMATCH;
         }
-        if (strpos($rel, 'wp-content/plugins/') === 0) {
-            return $this->verifyPlugin($rel, $abs);
+        if (strpos($local, 'wp-content/plugins/') === 0) {
+            return $this->verifyPlugin($prefix, $local, $abs);
         }
-        if ($core !== null && (strpos($rel, 'wp-admin/') === 0 || strpos($rel, 'wp-includes/') === 0)) {
+        if ($core !== null && (strpos($local, 'wp-admin/') === 0 || strpos($local, 'wp-includes/') === 0)) {
             return self::EXTRA;
         }
         return self::UNKNOWN;
@@ -91,9 +110,9 @@ final class WpChecksum
         return $this->releases[$slug . '@' . $version] ?? self::RELEASE_UNAVAILABLE;
     }
 
-    private function verifyPlugin(string $rel, string $abs): string
+    private function verifyPlugin(string $prefix, string $local, string $abs): string
     {
-        if (!preg_match('#^wp-content/plugins/([^/]+)/(.+)$#', $rel, $m)) {
+        if (!preg_match('#^wp-content/plugins/([^/]+)/(.+)$#', $local, $m)) {
             return self::UNKNOWN;
         }
         $slug = $m[1];
@@ -101,7 +120,7 @@ final class WpChecksum
         if (!preg_match('/^[A-Za-z0-9._-]+$/', $slug)) {
             return self::UNKNOWN;
         }
-        $version = VersionTracker::dirVersion($this->config, 'wp-content/plugins/' . $slug);
+        $version = VersionTracker::dirVersion($this->config, Config::inInstall($prefix, 'wp-content/plugins/' . $slug));
         if ($version === null || !preg_match('/^[A-Za-z0-9._+-]+$/', $version)) {
             return self::UNKNOWN;
         }
@@ -125,18 +144,27 @@ final class WpChecksum
     }
 
     /** @return array<string,string>|null */
-    private function coreMap(): ?array
+    private function coreMap(string $prefix): ?array
     {
-        if ($this->coreLoaded) {
-            return $this->core;
+        if (!array_key_exists($prefix, $this->core)) {
+            $info = $this->wpVersion($prefix);
+            if ($info === null) {
+                $this->note('WordPress version could not be read' . ($prefix !== '' ? " in $prefix/" : '') . '; core checksum verification skipped' . ($prefix !== '' ? ' there' : ''));
+                $this->core[$prefix] = null;
+            } else {
+                $key = $info[0] . '-' . $info[1];
+                if (!array_key_exists($key, $this->coreReleases)) {
+                    $this->coreReleases[$key] = $this->fetchCore($info[0], $info[1]);
+                }
+                $this->core[$prefix] = $this->coreReleases[$key];
+            }
         }
-        $this->coreLoaded = true;
-        $info = $this->wpVersion();
-        if ($info === null) {
-            $this->note('WordPress version could not be read; core checksum verification skipped');
-            return null;
-        }
-        [$ver, $locale] = $info;
+        return $this->core[$prefix];
+    }
+
+    /** @return array<string,string>|null */
+    private function fetchCore(string $ver, string $locale): ?array
+    {
         $cache = $this->cacheFile('wp-core-' . $ver . '-' . $locale . '.json');
         $map = $this->readCache($cache);
         if ($map === null) {
@@ -158,7 +186,6 @@ final class WpChecksum
             }
             $this->writeCache($cache, $map);
         }
-        $this->core = $map;
         return $map;
     }
 
@@ -209,9 +236,9 @@ final class WpChecksum
     }
 
     /** @return array{0:string,1:string}|null */
-    private function wpVersion(): ?array
+    private function wpVersion(string $prefix): ?array
     {
-        $src = @file_get_contents($this->config->abs('wp-includes/version.php'));
+        $src = @file_get_contents($this->config->abs(Config::inInstall($prefix, 'wp-includes/version.php')));
         if ($src === false || !preg_match('/\$wp_version\s*=\s*\'([^\']+)\'/', $src, $m) || !preg_match('/^[A-Za-z0-9.\-]+$/', $m[1])) {
             return null;
         }

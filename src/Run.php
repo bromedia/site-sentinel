@@ -96,6 +96,20 @@ final class Run
         return $now - (int)($full['last_complete'] ?? 0) >= self::FULL_EVERY;
     }
 
+    /** Whether the next run sets Sentinel up: the marker is there and nothing shows an earlier install. Reads only. */
+    public static function setupPending(string $script, string $stateDir): bool
+    {
+        if (!is_file(dirname($script) . '/' . self::MARKER) || is_file($stateDir . '/baseline.txt')) {
+            return false;
+        }
+        foreach (self::INSTALLED as $f) {
+            if (file_exists($stateDir . '/' . $f)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static function wasInstalled(State $state): bool
     {
         foreach (self::INSTALLED as $f) {
@@ -137,29 +151,25 @@ final class Run
             }
 
             $scan = Init::scan($config, $state, $http, $selfFiles);
-            if ($scan['findings']) {
-                @unlink($scan['tmp']);
-                $body = ["Site Sentinel was not started, because the website already contains files that look like", 'hacking tools or tampering:'];
-                foreach ($scan['findings'] as $f) {
-                    $body[] = '  - ' . $f->path;
-                }
-                $body[] = '';
-                $body[] = "Starting now would treat these files as normal. Please contact $who and forward this";
-                $body[] = 'email. Once the files have been dealt with, setup finishes by itself on the next run.';
-                $body[] = '';
-                $body[] = '--';
-                $body[] = 'Technical details for your web developer:';
-                foreach ($scan['findings'] as $f) {
-                    $body[] = '  ' . Finding::label($f->severity) . ' ' . $f->rule . ' ' . $f->path . ': ' . $f->message;
-                }
-                $body[] = '  If a file is harmless, remove it or add its path to "exclude" in sentinel.json;';
-                $body[] = '  setup then finishes on the next run. Excluded files are never monitored.';
-                self::alertOnce($state, $channels, $now, 'setup-infected:' . sha1(implode("\n", array_map(function (Finding $f) {
-                    return $f->key();
-                }, $scan['findings']))), "Security alert: setup found possible hacking on $site", self::text($body));
-                return ['exit' => 1, 'lines' => ['setup refused: ' . count($scan['findings']) . ' suspicious file(s); see the alert email']];
+            // Files that look like hacking are left out of the record, so every later run examines
+            // them again as new files and keeps reporting them until they are dealt with. Refusing
+            // the whole setup instead would leave the rest of the website unwatched meanwhile.
+            $flagged = [];
+            foreach ($scan['findings'] as $f) {
+                $flagged[$f->path] = null;
             }
-            if (!Init::install($config, $state, $scan['tmp'], $selfFiles)) {
+            if ($flagged) {
+                try {
+                    Baseline::applyUpdates($scan['tmp'], $flagged, $scan['tmp']);
+                } catch (\Throwable $e) {
+                    @unlink($scan['tmp']);
+                    return ['exit' => 2, 'lines' => ['setup failed: ' . $e->getMessage()]];
+                }
+            }
+            $untrusted = array_map(function ($path) use ($config) {
+                return Analyzer::groupOf((string)$path, $config->nestedWordPress);
+            }, array_keys($flagged));
+            if (!Init::install($config, $state, $scan['tmp'], $selfFiles, $untrusted)) {
                 return ['exit' => 2, 'lines' => ['setup failed: cannot install the baseline in ' . $config->stateDir]];
             }
             // The setup scan was a full one, so the next full scan is due in a day, not on the next run.
@@ -167,23 +177,28 @@ final class Run
             self::rememberSettings($config, $state);
             @unlink($marker);
 
-            if ($config->profile !== 'wordpress') {
-                $wpLine = 'not detected';
-            } elseif (!$config->wpChecksums) {
-                $wpLine = 'yes';
-            } elseif ($scan['core_verified'] === false) {
-                $wpLine = "yes, but the official WordPress checksums could not be downloaded, so WordPress's own files were recorded without being compared to the official copies. Please ask $who to look into this.";
-            } else {
-                $wpLine = 'yes, checked against the official WordPress checksums';
+            $recorded = max(0, $scan['count'] - count($flagged));
+            $body = ["Site Sentinel is now watching $site.", ''];
+            if ($flagged) {
+                $body = [
+                    "Site Sentinel is now watching $site, but the website already contains files that look like",
+                    'hacking tools or tampering:',
+                ];
+                foreach (array_keys($flagged) as $path) {
+                    $body[] = '  - ' . $path;
+                }
+                $body[] = '';
+                $body[] = 'These files were not recorded as normal, so Site Sentinel keeps reporting them until they';
+                $body[] = "have been dealt with. Please contact $who today and forward this email.";
+                $body[] = 'The rest of the website is being watched from now on.';
+                $body[] = '';
             }
-            $body = [
-                "Site Sentinel is now watching $site.",
-                '',
+            $body = array_merge($body, [
                 'What was set up',
                 '  Website folder: ' . $config->siteRoot,
-                '  Files recorded: ' . number_format($scan['count']),
-                '  WordPress: ' . $wpLine,
-                '  Plugin and theme updates: ' . self::policy($config->autoAcceptUnverifiedUpdates),
+                '  Files recorded: ' . number_format($recorded),
+                '  WordPress: ' . self::wordpressLine($config, $scan, $who),
+            ], $config->hasWordPress() ? ['  Plugin and theme updates: ' . self::policy($config->autoAcceptUnverifiedUpdates)] : [], [
                 '  Alerts go to: ' . implode(', ', self::recipients($config)),
                 '',
                 'What happens now',
@@ -193,12 +208,22 @@ final class Run
                 "If you ever receive an alert, contact $who.",
                 '',
                 'This email is also the test that alerts reach you: if it landed in spam, mark it as not spam.',
-            ];
+            ]);
+            if ($flagged) {
+                $body[] = '';
+                $body[] = '--';
+                $body[] = 'Technical details for your web developer:';
+                foreach ($scan['findings'] as $f) {
+                    $body[] = '  ' . Finding::label($f->severity) . ' ' . $f->rule . ' ' . $f->path . ': ' . $f->message . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
+                }
+                $body[] = '  These files are not in the baseline and are reported again on later runs. Clean or';
+                $body[] = '  remove a file, or if it is harmless, dismiss it by its id; then accept --path=<file>.';
+            }
             $notes = array_merge($scan['notes'], array_map(function ($l) {
                 return sprintf("'%s' is a symlink to a directory (%s) and is not monitored.", $l[0], $l[1]);
             }, $scan['symlinkDirs']));
             if ($config->heartbeatUrl === '') {
-                $notes[] = 'No heartbeat is set, so nothing outside this server notices if Sentinel stops running. Add a "heartbeat =" line to settings.txt.';
+                $notes[] = 'Optional: no heartbeat is set. A "heartbeat =" line in settings.txt lets an outside service (for example healthchecks.io) warn you if Sentinel ever stops running; nothing on this server can notice that.';
             }
             if ($notes) {
                 $body[] = '';
@@ -209,13 +234,55 @@ final class Run
                 }
             }
             // Kept until it has gone out, and retried on later runs; the setup itself is not redone.
-            $state->writeJson(self::WELCOME, ['subject' => "Site Sentinel is now protecting $site", 'body' => self::text($body)]);
+            $subject = $flagged ? "Security alert: Site Sentinel is now protecting $site and found possible hacking" : "Site Sentinel is now protecting $site";
+            $state->writeJson(self::WELCOME, ['subject' => $subject, 'body' => self::text($body)]);
             $w = self::sendWelcome($state, $channels);
-            $lines = array_merge([sprintf('setup complete: %d file(s) recorded for %s', $scan['count'], $site)], $w['lines']);
-            return ['exit' => $w['ok'] ? 0 : 2, 'lines' => $lines];
+            // Recorded as reported, so "dismiss <id>" works from this email and the daily reminders
+            // start from now. If the email did not go out, the next check alerts them itself.
+            (new AlertLog($state))->commit($scan['findings'], $w['ok'] ? $scan['findings'] : [], $now);
+            $line = sprintf('setup complete: %d file(s) recorded for %s', $recorded, $site);
+            if ($flagged) {
+                $line .= sprintf('; %d suspicious file(s) left out and reported, see the alert email', count($flagged));
+            }
+            $lines = array_merge([$line], $w['lines']);
+            return ['exit' => $w['ok'] ? ($flagged ? 1 : 0) : 2, 'lines' => $lines];
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * The welcome email's WordPress line: every install found (the website folder and those in
+     * subfolders) and whether the official checksums were actually compared, never claimed when
+     * they could not be downloaded.
+     */
+    private static function wordpressLine(Config $config, array $scan, string $who): string
+    {
+        if (!$config->hasWordPress()) {
+            return 'not detected';
+        }
+        $failed = [];
+        foreach ($config->wpChecksums ? $config->wordpressInstalls() : [] as $p) {
+            if (($scan['core_by_install'][$p] ?? null) === false) {
+                $failed[] = $p === '' ? 'the website folder' : $p;
+            }
+        }
+        $nested = $config->nestedWordPress;
+        if (!$nested) {
+            $line = 'yes';
+        } elseif ($config->profile === 'wordpress') {
+            $line = sprintf('yes, in the website folder and in %d subfolder%s (%s)', count($nested), count($nested) === 1 ? '' : 's', implode(', ', $nested));
+        } else {
+            $line = sprintf('%d site%s in subfolders (%s)', count($nested), count($nested) === 1 ? '' : 's', implode(', ', $nested));
+        }
+        if (!$config->wpChecksums) {
+            return $line;
+        }
+        if ($failed) {
+            $which = $nested ? ' for ' . implode(', ', $failed) : '';
+            return $line . ", but the official WordPress checksums could not be downloaded$which, so WordPress's own files were recorded without being compared to the official copies. Please ask $who to look into this.";
+        }
+        return $line . ($nested && count($config->wordpressInstalls()) > 1 ? ', each checked against the official WordPress checksums' : ', checked against the official WordPress checksums');
     }
 
     /** Where the sentinel folder must not be, in words a site owner can act on. */

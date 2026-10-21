@@ -9,6 +9,8 @@ final class ConfigException extends \RuntimeException
 
 final class Config
 {
+    /** The site_root the client package ships with, relative to sentinel.json. */
+    public const PACKAGE_SITE_ROOT = '../public_html';
     public const PROFILES = ['wordpress', 'generic'];
     public const CHANNEL_TYPES = ['email', 'ntfy', 'telegram', 'webhook', 'file'];
     /** Extensions a web server may run as PHP; anywhere in a file name's extension chain they make it code. */
@@ -54,11 +56,22 @@ final class Config
     public $rulesPublicKey = '';
     public $allowUnsignedRules = false;
     public $clamscanPath = '';
+    public $clamdscanPath = '';
     public $yaraPath = '';
     public $yaraRules = '';
 
     /** @var string[] */
     private $extraExclude = [];
+    /** The packaged site_root was missing, and public_html was found one folder further up. */
+    public $siteRootFoundHigher = false;
+    /** WordPress installs in subfolders (Profile::nestedWordPress), found each time the config is loaded. */
+    public $nestedWordPress = [];
+    /** @var string[] their uploads folders and anchored sensitive paths; never written back to the config file */
+    private $nestedUploads = [];
+    private $nestedSensitive = [];
+    /** Whether exclude and sensitive were configured, or are the profile's defaults (not written back). */
+    private $excludeConfigured = false;
+    private $sensitiveConfigured = false;
 
     public static function load(string $file): Config
     {
@@ -73,6 +86,12 @@ final class Config
         // Relative paths are relative to the config file, not to wherever cron happens to start,
         // so a packaged folder works without anyone typing their hosting username.
         $dir = dirname($file);
+        // The package ships "../public_html". If unzipping added a folder level (for example
+        // ~/site-sentinel/sentinel/), the website is exactly one folder further up.
+        $higher = ($raw['site_root'] ?? null) === self::PACKAGE_SITE_ROOT && !is_dir($dir . '/' . self::PACKAGE_SITE_ROOT) && is_dir($dir . '/../' . self::PACKAGE_SITE_ROOT);
+        if ($higher) {
+            $raw['site_root'] = '../' . self::PACKAGE_SITE_ROOT;
+        }
         foreach (['site_root', 'state_dir', 'settings_file'] as $key) {
             if (isset($raw[$key]) && is_string($raw[$key]) && $raw[$key] !== '' && $raw[$key][0] !== '/') {
                 $raw[$key] = $dir . '/' . $raw[$key];
@@ -94,6 +113,7 @@ final class Config
             $raw = self::withSettings($raw, $settings);
         }
         $c = self::fromArray($raw);
+        $c->siteRootFoundHigher = $higher;
         $c->settingsProblem = $problem;
         $c->settings = $settings !== null ? $settings->toArray() : [];
         return $c;
@@ -160,10 +180,29 @@ final class Config
         $c->profile = $profile;
         $d = Profile::defaults($profile);
         $c->watch = self::normalizeWatch($raw['watch'] ?? ['.']);
+        $c->excludeConfigured = isset($raw['exclude']);
+        $c->sensitiveConfigured = isset($raw['sensitive']);
         $c->exclude = self::strings($raw['exclude'] ?? $d['exclude']);
         $c->codeExtensions = array_map('strtolower', self::strings($raw['code_extensions'] ?? $d['code_extensions']));
         $c->sensitive = self::strings($raw['sensitive'] ?? $d['sensitive']);
         $c->uploadsDir = trim((string)($raw['uploads_dir'] ?? $d['uploads_dir']), '/');
+        // WordPress in a subfolder gets the WordPress path rules under its folder. A configured
+        // exclude or sensitive list replaces the defaults, for subfolders as for the root.
+        $c->nestedWordPress = Profile::nestedWordPress($c->siteRoot, new PathFilter($c->exclude));
+        $wp = Profile::defaults('wordpress');
+        foreach ($c->nestedWordPress as $prefix) {
+            $c->nestedUploads[] = $prefix . '/' . $wp['uploads_dir'];
+            foreach ($c->excludeConfigured ? [] : $wp['exclude'] as $pattern) {
+                if (($moved = Profile::under($prefix, $pattern)) !== null) {
+                    $c->extraExclude[] = $moved;
+                }
+            }
+            foreach ($c->sensitiveConfigured ? [] : $wp['sensitive'] as $pattern) {
+                if (($moved = Profile::under($prefix, $pattern)) !== null) {
+                    $c->nestedSensitive[] = $moved;
+                }
+            }
+        }
         $c->tempRoot = (bool)($raw['temp_root'] ?? false);
         $c->channels = self::channels($raw['channels'] ?? []);
         $c->budgetSeconds = self::int($raw, 'budget_seconds', 50);
@@ -184,6 +223,7 @@ final class Config
         $c->rulesPublicKey = trim((string)($raw['rules_public_key'] ?? ''));
         $c->allowUnsignedRules = (bool)($raw['allow_unsigned_rules'] ?? false);
         $c->clamscanPath = trim((string)($raw['clamscan_path'] ?? ''));
+        $c->clamdscanPath = trim((string)($raw['clamdscan_path'] ?? ''));
         $c->yaraPath = trim((string)($raw['yara_path'] ?? ''));
         $c->yaraRules = trim((string)($raw['yara_rules'] ?? ''));
         return $c;
@@ -191,7 +231,9 @@ final class Config
 
     public function toArray(): array
     {
-        return [
+        // Default exclude and sensitive lists are left out, so loading the result again derives them
+        // again (with the subfolder WordPress defaults) instead of reading them as a configured list.
+        return array_diff_key([
             'site_name' => $this->siteName,
             'profile' => $this->profile,
             'site_root' => $this->siteRoot === '' ? '/' : $this->siteRoot,
@@ -217,9 +259,10 @@ final class Config
             'rules_public_key' => $this->rulesPublicKey,
             'allow_unsigned_rules' => $this->allowUnsignedRules,
             'clamscan_path' => $this->clamscanPath,
+            'clamdscan_path' => $this->clamdscanPath,
             'yara_path' => $this->yaraPath,
             'yara_rules' => $this->yaraRules,
-        ];
+        ], array_filter(['exclude' => !$this->excludeConfigured, 'sensitive' => !$this->sensitiveConfigured]));
     }
 
     public function abs(string $rel): string
@@ -267,9 +310,57 @@ final class Config
         return $parts && in_array(end($parts), $this->codeExtensions, true);
     }
 
+    /** Every WordPress install watched: '' for the website folder itself, then those in subfolders. */
+    public function wordpressInstalls(): array
+    {
+        return array_merge($this->profile === 'wordpress' ? [''] : [], $this->nestedWordPress);
+    }
+
+    public function hasWordPress(): bool
+    {
+        return $this->profile === 'wordpress' || $this->nestedWordPress;
+    }
+
+    /**
+     * The WordPress install a path belongs to (the deepest one, so shop/dev wins over shop) and
+     * the path inside that install, or null for a path outside every install.
+     *
+     * @return array{0:string,1:string}|null
+     */
+    public function wordpressInstallOf(string $rel): ?array
+    {
+        $best = null;
+        foreach ($this->nestedWordPress as $prefix) {
+            if (strpos($rel, $prefix . '/') === 0 && ($best === null || strlen($prefix) > strlen($best))) {
+                $best = $prefix;
+            }
+        }
+        if ($best !== null) {
+            return [$best, substr($rel, strlen($best) + 1)];
+        }
+        return $this->profile === 'wordpress' ? ['', $rel] : null;
+    }
+
+    /** A path inside a WordPress install, as a path in the website folder. */
+    public static function inInstall(string $prefix, string $local): string
+    {
+        return $prefix === '' ? $local : $prefix . '/' . $local;
+    }
+
     public function isUploads(string $rel): bool
     {
-        return $this->uploadsDir !== '' && ($rel === $this->uploadsDir || strpos($rel, $this->uploadsDir . '/') === 0);
+        foreach (array_merge([$this->uploadsDir], $this->nestedUploads) as $dir) {
+            if ($dir !== '' && ($rel === $dir || strpos($rel, $dir . '/') === 0)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Sensitive-file patterns: configured ones plus those of WordPress installs in subfolders. */
+    public function sensitivePatterns(): array
+    {
+        return array_merge($this->sensitive, $this->nestedSensitive);
     }
 
     private function relative(string $abs): ?string

@@ -49,7 +49,7 @@ final class Accept
             Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
         }
 
-        if ($config->profile === 'wordpress') {
+        if ($config->hasWordPress()) {
             $current = VersionTracker::read($config);
             if (!$paths) {
                 $state->writeJson('versions.json', $current);

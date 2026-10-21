@@ -14,6 +14,60 @@ final class Profile
         return 'generic';
     }
 
+    /**
+     * WordPress installs in subfolders of the site, for example "shop" or "blog/dev", up to three
+     * levels down. Only folders are listed, never files, and an install's own wp-admin, wp-includes
+     * and wp-content are not entered, so this stays cheap however large the site is.
+     *
+     * @return string[] relative paths, sorted
+     */
+    public static function nestedWordPress(string $root, PathFilter $excluded, int $depth = 3): array
+    {
+        $root = rtrim($root, '/');
+        $found = [];
+        $level = [''];
+        for ($d = 1; $d <= $depth && $level; $d++) {
+            $next = [];
+            foreach ($level as $rel) {
+                $abs = $rel === '' ? $root : $root . '/' . $rel;
+                $isWp = self::detect($abs) === 'wordpress';
+                if ($isWp && $rel !== '') {
+                    $found[] = $rel;
+                }
+                $names = @scandir($abs);
+                foreach ($names === false ? [] : $names as $name) {
+                    if ($name === '.' || $name === '..' || ($isWp && in_array($name, ['wp-admin', 'wp-includes', 'wp-content'], true))) {
+                        continue;
+                    }
+                    $child = $rel === '' ? $name : $rel . '/' . $name;
+                    if (is_dir($abs . '/' . $name) && !is_link($abs . '/' . $name) && !$excluded->matches($child)) {
+                        $next[] = $child;
+                    }
+                }
+            }
+            $level = $next;
+        }
+        foreach ($level as $rel) { // the deepest level is only checked, not listed
+            if (self::detect($root . '/' . $rel) === 'wordpress') {
+                $found[] = $rel;
+            }
+        }
+        sort($found);
+        return $found;
+    }
+
+    /**
+     * A root-anchored pattern (one with a slash, like "wp-content/cache/" or "/wp-config.php")
+     * moved under a subfolder; patterns that match anywhere already cover subfolders.
+     */
+    public static function under(string $prefix, string $pattern): ?string
+    {
+        if (strpos(trim($pattern, '/'), '/') === false && $pattern[0] !== '/') {
+            return null;
+        }
+        return '/' . $prefix . '/' . ltrim($pattern, '/');
+    }
+
     /** @return array{exclude: string[], code_extensions: string[], sensitive: string[], uploads_dir: string} */
     public static function defaults(string $profile): array
     {

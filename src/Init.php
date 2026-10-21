@@ -117,7 +117,7 @@ final class Init
      * baseline to a temporary file. Nothing is trusted yet: install() does that.
      *
      * @param array<string,string> $selfFiles Sentinel's own files: a rules.json is used only if it is trusted
-     * @return array{tmp:string, count:int, findings:Finding[], notes:string[], symlinkDirs:array, core_verified:?bool}
+     * @return array{tmp:string, count:int, findings:Finding[], notes:string[], symlinkDirs:array, core_verified:?bool, core_by_install:array<string,bool>}
      */
     public static function scan(Config $config, State $state, HttpClient $http, array $selfFiles = []): array
     {
@@ -126,7 +126,7 @@ final class Init
         // not decide what the very first baseline accepts.
         $trusted = isset($selfFiles['rules']) && (new SelfCheck($state, $selfFiles))->isTrusted('rules');
         $rules = is_file($rulesFile) && $trusted ? Rules::load($rulesFile) : Rules::builtin();
-        $wp = $config->profile === 'wordpress' && $config->wpChecksums ? new WpChecksum($http, $config, $state->path('cache')) : null;
+        $wp = $config->hasWordPress() && $config->wpChecksums ? new WpChecksum($http, $config, $state->path('cache')) : null;
         $analyzer = new Analyzer(
             $config,
             new PatternScanner($rules, $config->maxScanBytes),
@@ -159,18 +159,23 @@ final class Init
             self::flush($analyzer, $batch, $findings, $notes);
         })();
         $count = Baseline::write($tmp, $records);
-        return ['tmp' => $tmp, 'count' => $count, 'findings' => $findings, 'notes' => array_values(array_unique($notes)), 'symlinkDirs' => $symlinkDirs, 'core_verified' => $wp !== null ? $wp->coreVerified() : null];
+        return ['tmp' => $tmp, 'count' => $count, 'findings' => $findings, 'notes' => array_values(array_unique($notes)), 'symlinkDirs' => $symlinkDirs, 'core_verified' => $wp !== null ? $wp->coreVerified() : null, 'core_by_install' => $wp !== null ? $wp->coreVerifiedByInstall() : []];
     }
 
-    /** Makes a scanned baseline the trusted one and starts monitoring from a clean slate. */
-    public static function install(Config $config, State $state, string $tmp, array $selfFiles): bool
+    /**
+     * Makes a scanned baseline the trusted one and starts monitoring from a clean slate.
+     *
+     * @param string[] $untrustedGroups plugins and themes (Analyzer::groupOf) with a file left out of
+     *   the baseline: their version is not recorded, so a later version bump cannot vouch for them
+     */
+    public static function install(Config $config, State $state, string $tmp, array $selfFiles, array $untrustedGroups = []): bool
     {
         if (!rename($tmp, $state->path('baseline.txt'))) {
             @unlink($tmp);
             return false;
         }
-        if ($config->profile === 'wordpress') {
-            $state->writeJson('versions.json', VersionTracker::read($config));
+        if ($config->hasWordPress()) {
+            $state->writeJson('versions.json', array_diff_key(VersionTracker::read($config), array_flip($untrustedGroups)));
         }
         (new SelfCheck($state, $selfFiles))->record();
         (new AlertLog($state))->clear();
