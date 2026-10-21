@@ -10,7 +10,7 @@ use Sentinel\Settings;
 /** Captures mail() calls made through EmailNotifier. */
 final class MailBox
 {
-    /** @var array<int,array{to:string,subject:string,body:string}> */
+    /** @var array<int,array{to:string,subject:string,body:string,headers:string}> */
     public $sent = [];
     /** While true, every send fails the way mail() does when the mail system is down. */
     public $failing = false;
@@ -21,12 +21,34 @@ final class MailBox
             if ($this->failing) {
                 return false;
             }
-            $this->sent[] = ['to' => $to, 'subject' => $subject, 'body' => $body];
+            $this->sent[] = ['to' => $to, 'subject' => $subject, 'body' => $body, 'headers' => $headers];
             return true;
         };
     }
 
-    /** @return array<int,array{to:string,subject:string,body:string}> */
+    /**
+     * The attachment of the $i-th message, decoded from its MIME, or null when it has none.
+     *
+     * @return array{name:string, content:string}|null
+     */
+    public function attachment(int $i): ?array
+    {
+        $m = $this->sent[$i] ?? null;
+        if ($m === null || !preg_match('/boundary="([^"]+)"/', $m['headers'], $b)) {
+            return null;
+        }
+        foreach (explode('--' . $b[1], $m['body']) as $part) {
+            if (!preg_match('/Content-Disposition: attachment; filename="([^"]+)"/i', $part, $f)) {
+                continue;
+            }
+            $pos = strpos($part, "\r\n\r\n");
+            $raw = $pos === false ? '' : substr($part, $pos + 4);
+            return ['name' => $f[1], 'content' => (string)base64_decode($raw)];
+        }
+        return null;
+    }
+
+    /** @return array<int,array{to:string,subject:string,body:string,headers:string}> */
     public function since(int $n): array
     {
         return array_slice($this->sent, $n);

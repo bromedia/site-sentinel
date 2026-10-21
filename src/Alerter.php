@@ -15,7 +15,7 @@ final class Alerter
     }
 
     /** @return array{ok: bool, results: string[], attempted: int} */
-    public function send(string $subject, string $body, int $topSeverity): array
+    public function send(string $subject, string $body, int $topSeverity, ?array $attachment = null): array
     {
         $results = [];
         $attempted = 0;
@@ -26,7 +26,7 @@ final class Alerter
             }
             $attempted++;
             try {
-                $ch->notifier->send($subject, $body, $topSeverity);
+                $ch->notifier->send($subject, $body, $topSeverity, $attachment);
                 $results[] = $ch->notifier->name() . ': sent';
                 $succeeded++;
             } catch (\Throwable $e) {

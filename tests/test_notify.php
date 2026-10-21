@@ -143,3 +143,126 @@ t('NotifierFactory builds channels from config', function () {
     assertSame(['email', 'ntfy', 'telegram', 'webhook', 'file'], array_map(function (Channel $x) { return $x->notifier->name(); }, $ch));
     assertSame([Finding::WARNING, Finding::CRITICAL, Finding::WARNING, Finding::WARNING, Finding::INFO], array_map(function (Channel $x) { return $x->minSeverity; }, $ch));
 });
+
+function sampleAttachment(string $content = "Sentinel report\nline two\n"): array
+{
+    return ['name' => 'sentinel-report-site-20251009-0853.txt', 'path' => 'sentinel/state/reports/sentinel-report-site-20251009-0853.txt', 'content' => $content];
+}
+
+t('EmailNotifier attaches the report as a well-formed multipart message', function () {
+    $mail = new MailBox();
+    $content = str_repeat("a long report line with some text in it\n", 40) . "caf\xC3\xA9\n";
+    $n = new EmailNotifier(['a@example.com'], 'from@example.com', $mail->mailer());
+    $n->send('Subject', "the alert body\nsecond line", Finding::WARNING, sampleAttachment($content));
+    assertSame(1, count($mail->sent));
+    $h = $mail->sent[0]['headers'];
+    $b = $mail->sent[0]['body'];
+    assertTrue((bool)preg_match('/^Content-Type: multipart\/mixed; boundary="([^"]+)"\r?$/m', $h, $m), 'multipart/mixed with a boundary');
+    $boundary = $m[1];
+    assertContains('MIME-Version: 1.0', $h);
+    assertContains('From: from@example.com', $h);
+    assertContains('X-Priority: 3', $h);
+    assertNotContains($boundary, $content);
+    assertSame(3, substr_count($b, '--' . $boundary), 'two parts and the closing marker');
+    assertContains('--' . $boundary . '--', $b);
+    assertContains("Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit", $b);
+    assertContains("the alert body\nsecond line", $b);
+    assertContains('Content-Type: text/plain; charset=UTF-8; name="sentinel-report-site-20251009-0853.txt"', $b);
+    assertContains('Content-Disposition: attachment; filename="sentinel-report-site-20251009-0853.txt"', $b);
+    assertContains('Content-Transfer-Encoding: base64', $b);
+    foreach (explode("\r\n", substr($b, (int)strpos($b, 'base64'))) as $line) {
+        assertTrue(strlen($line) <= 76 || strpos($line, '--') === 0 || strpos($line, 'Content') === 0 || $line === 'base64', 'base64 lines are at most 76 characters');
+    }
+    $att = $mail->attachment(0);
+    assertSame('sentinel-report-site-20251009-0853.txt', $att['name']);
+    assertSame($content, $att['content']);
+});
+
+t('EmailNotifier retries without the attachment when mail() refuses it', function () {
+    $calls = [];
+    $mailer = function (string $to, string $subject, string $body, string $headers) use (&$calls): bool {
+        $calls[] = ['body' => $body, 'headers' => $headers];
+        return strpos($headers, 'multipart') === false;
+    };
+    $n = new EmailNotifier(['a@example.com'], 'from@example.com', $mailer);
+    $n->send('Subject', 'the alert body', Finding::WARNING, sampleAttachment());
+    assertSame(2, count($calls));
+    assertContains('multipart', $calls[0]['headers']);
+    assertNotContains('multipart', $calls[1]['headers']);
+    assertContains('the alert body', $calls[1]['body']);
+    assertContains('The full report could not be attached; it is saved on the server: sentinel/state/reports/sentinel-report-site-20251009-0853.txt', $calls[1]['body']);
+
+    $dead = new EmailNotifier(['a@example.com'], 'from@example.com', function () { return false; });
+    assertThrows(RuntimeException::class, function () use ($dead) { $dead->send('s', 'b', Finding::WARNING, sampleAttachment()); });
+});
+
+t('EmailNotifier without an attachment sends exactly the plain message', function () {
+    $calls = [];
+    $mailer = function (string $to, string $subject, string $body, string $headers) use (&$calls): bool {
+        $calls[] = [$to, $subject, $body, $headers];
+        return true;
+    };
+    (new EmailNotifier(['a@example.com'], 'from@example.com', $mailer))->send('Subj', 'plain body', Finding::CRITICAL);
+    assertSame(['a@example.com', 'Subj', 'plain body',
+        "From: from@example.com\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nX-Priority: 1\r\n"], $calls[0]);
+});
+
+t('other channels get a pointer to the server copy', function () {
+    $pointer = 'Full report saved on the server: sentinel/state/reports/sentinel-report-site-20251009-0853.txt';
+    $att = sampleAttachment();
+
+    $http = new FakeHttp();
+    $http->route('https://ntfy.example/topic', 200, 'ok');
+    (new NtfyNotifier('https://ntfy.example/topic', $http))->send('S', 'the body', Finding::WARNING, $att);
+    assertSame("the body\n\n" . $pointer, $http->calls[0][2]);
+
+    $http2 = new FakeHttp();
+    $http2->route('https://api.telegram.org/', 200, '{"ok":true}');
+    (new TelegramNotifier('123:abc', '-100', $http2))->send('S', str_repeat('x', 5000), Finding::WARNING, $att);
+    parse_str($http2->calls[0][2], $form);
+    assertTrue(strlen($form['text']) <= 4000);
+    assertSame($pointer, substr($form['text'], -strlen($pointer)), 'the pointer survives the length cut');
+
+    $http3 = new FakeHttp();
+    $http3->route('https://hook.example/h', 204, '');
+    (new WebhookNotifier('https://hook.example/h', $http3))->send('S', 'Body', Finding::WARNING, $att);
+    $payload = json_decode($http3->calls[0][2], true);
+    assertSame("Body\n\n" . $pointer, $payload['body']);
+
+    $f = tmpdir() . '/alerts.log';
+    (new FileNotifier($f))->send('S', 'file body', Finding::WARNING, $att);
+    assertContains("file body\n\n" . $pointer . "\n", (string)file_get_contents($f));
+});
+
+t('without an attachment the other channels send exactly what they always did', function () {
+    $http = new FakeHttp();
+    $http->route('https://ntfy.example/topic', 200, 'ok');
+    (new NtfyNotifier('https://ntfy.example/topic', $http))->send('S', 'the body', Finding::WARNING);
+    assertSame('the body', $http->calls[0][2]);
+
+    $http3 = new FakeHttp();
+    $http3->route('https://hook.example/h', 204, '');
+    (new WebhookNotifier('https://hook.example/h', $http3))->send('S', 'Body', Finding::WARNING);
+    assertSame('Body', json_decode($http3->calls[0][2], true)['body']);
+
+    $http2 = new FakeHttp();
+    $http2->route('https://api.telegram.org/', 200, '{"ok":true}');
+    (new TelegramNotifier('123:abc', '-100', $http2))->send('S', 'tb', Finding::WARNING);
+    parse_str($http2->calls[0][2], $form);
+    assertSame("S\n\ntb", $form['text']);
+
+    $f = tmpdir() . '/plain.log';
+    (new FileNotifier($f))->send('S', 'fb', Finding::WARNING);
+    assertSame(1, preg_match('/^=== \S+ S ===\nfb\n\n$/', (string)file_get_contents($f)));
+});
+
+t('Alerter hands the attachment to every channel it sends to', function () {
+    $a = new FakeNotifier('a');
+    $b = new FakeNotifier('b');
+    $att = sampleAttachment();
+    (new Alerter([new Channel($a, Finding::WARNING), new Channel($b, Finding::CRITICAL)]))->send('s', 'b', Finding::CRITICAL, $att);
+    assertSame($att, $a->sent[0]['attachment']);
+    assertSame($att, $b->sent[0]['attachment']);
+    (new Alerter([new Channel($a, Finding::WARNING)]))->send('s', 'b', Finding::WARNING);
+    assertSame(null, $a->sent[1]['attachment']);
+});

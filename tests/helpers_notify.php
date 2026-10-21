@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 final class FakeNotifier implements \Sentinel\Notifier
 {
-    /** @var array<int,array{subject:string,body:string,severity:int}> */
+    /** @var array<int,array{subject:string,body:string,severity:int,attachment:?array}> */
     public $sent = [];
     public $fail = false;
     private $name;
@@ -18,12 +18,12 @@ final class FakeNotifier implements \Sentinel\Notifier
         return $this->name;
     }
 
-    public function send(string $subject, string $body, int $severity): void
+    public function send(string $subject, string $body, int $severity, ?array $attachment = null): void
     {
         if ($this->fail) {
             throw new RuntimeException('simulated failure');
         }
-        $this->sent[] = ['subject' => $subject, 'body' => $body, 'severity' => $severity];
+        $this->sent[] = ['subject' => $subject, 'body' => $body, 'severity' => $severity, 'attachment' => $attachment];
     }
 }
 

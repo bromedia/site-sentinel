@@ -24,13 +24,35 @@ final class EmailNotifier implements Notifier
         return 'email';
     }
 
-    public function send(string $subject, string $body, int $severity): void
+    public function send(string $subject, string $body, int $severity, ?array $attachment = null): void
     {
-        $headers = 'From: ' . $this->from . "\r\n"
-            . "MIME-Version: 1.0\r\n"
-            . "Content-Type: text/plain; charset=UTF-8\r\n"
-            . 'X-Priority: ' . ($severity >= Finding::CRITICAL ? '1' : '3') . "\r\n";
-        if (!($this->mailer)(implode(', ', $this->to), self::encodeSubject($subject), $body, $headers)) {
+        $to = implode(', ', $this->to);
+        $encoded = self::encodeSubject($subject);
+        $common = 'From: ' . $this->from . "\r\n"
+            . "MIME-Version: 1.0\r\n";
+        $priority = 'X-Priority: ' . ($severity >= Finding::CRITICAL ? '1' : '3') . "\r\n";
+        if ($attachment !== null) {
+            $boundary = '=_sentinel_' . bin2hex(random_bytes(12));
+            $name = (string)preg_replace('/[^A-Za-z0-9._-]/', '_', (string)$attachment['name']);
+            $message = '--' . $boundary . "\r\n"
+                . "Content-Type: text/plain; charset=UTF-8\r\n"
+                . "Content-Transfer-Encoding: 8bit\r\n\r\n"
+                . $body . "\r\n"
+                . '--' . $boundary . "\r\n"
+                . 'Content-Type: text/plain; charset=UTF-8; name="' . $name . "\"\r\n"
+                . "Content-Transfer-Encoding: base64\r\n"
+                . 'Content-Disposition: attachment; filename="' . $name . "\"\r\n\r\n"
+                . chunk_split(base64_encode((string)$attachment['content']), 76, "\r\n")
+                . '--' . $boundary . "--\r\n";
+            $headers = $common . 'Content-Type: multipart/mixed; boundary="' . $boundary . "\"\r\n" . $priority;
+            if (($this->mailer)($to, $encoded, $message, $headers)) {
+                return;
+            }
+            // Some mail systems refuse a large message: still get the alert out, pointing at the saved report.
+            $body .= "\n\nThe full report could not be attached; it is saved on the server: " . $attachment['path'];
+        }
+        $headers = $common . "Content-Type: text/plain; charset=UTF-8\r\n" . $priority;
+        if (!($this->mailer)($to, $encoded, $body, $headers)) {
             throw new \RuntimeException('mail() reported failure');
         }
     }
@@ -58,8 +80,11 @@ final class NtfyNotifier implements Notifier
         return 'ntfy';
     }
 
-    public function send(string $subject, string $body, int $severity): void
+    public function send(string $subject, string $body, int $severity, ?array $attachment = null): void
     {
+        if ($attachment !== null) {
+            $body .= "\n\n" . AttachmentNote::pointer($attachment);
+        }
         $r = $this->http->request('POST', $this->url, $body, [
             'Title' => (string)preg_replace('/[^\x20-\x7E]/', '?', $subject),
             'Priority' => $severity >= Finding::CRITICAL ? 'urgent' : 'high',
@@ -89,10 +114,13 @@ final class TelegramNotifier implements Notifier
         return 'telegram';
     }
 
-    public function send(string $subject, string $body, int $severity): void
+    public function send(string $subject, string $body, int $severity, ?array $attachment = null): void
     {
         $text = $subject . "\n\n" . $body;
-        $text = function_exists('mb_strcut') ? mb_strcut($text, 0, 4000, 'UTF-8') : substr($text, 0, 4000);
+        $tail = $attachment !== null ? "\n\n" . AttachmentNote::pointer($attachment) : '';
+        $max = 4000 - strlen($tail);
+        $text = function_exists('mb_strcut') ? mb_strcut($text, 0, $max, 'UTF-8') : substr($text, 0, $max);
+        $text .= $tail;
         $r = $this->http->request(
             'POST',
             'https://api.telegram.org/bot' . $this->token . '/sendMessage',
@@ -122,8 +150,11 @@ final class WebhookNotifier implements Notifier
         return 'webhook';
     }
 
-    public function send(string $subject, string $body, int $severity): void
+    public function send(string $subject, string $body, int $severity, ?array $attachment = null): void
     {
+        if ($attachment !== null) {
+            $body .= "\n\n" . AttachmentNote::pointer($attachment);
+        }
         $json = json_encode(['subject' => $subject, 'severity' => Finding::label($severity), 'body' => $body, 'time' => gmdate('c')], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $r = $this->http->request('POST', $this->url, (string)$json, ['Content-Type' => 'application/json'], 10);
         if ($r['status'] < 200 || $r['status'] >= 300) {
@@ -146,8 +177,11 @@ final class FileNotifier implements Notifier
         return 'file';
     }
 
-    public function send(string $subject, string $body, int $severity): void
+    public function send(string $subject, string $body, int $severity, ?array $attachment = null): void
     {
+        if ($attachment !== null) {
+            $body .= "\n\n" . AttachmentNote::pointer($attachment);
+        }
         $entry = '=== ' . gmdate('c') . ' ' . $subject . " ===\n" . $body . "\n\n";
         if (@file_put_contents($this->path, $entry, FILE_APPEND | LOCK_EX) === false) {
             throw new \RuntimeException('cannot write ' . $this->path);
