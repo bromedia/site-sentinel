@@ -523,6 +523,9 @@ t('Digest: the client changes section counts files per group, and each owner lis
     $body = Sentinel\Digest::forClient('Shop', 1760000000, [$group, $one], [], [], '')['body'];
     assertContains("  - 30 files changed in wp-content/themes/Avada\n", $body);
     assertContains("  - 1 file changed in wp-content/themes/Lite\n", $body);
+    $top = new Finding(Finding::WARNING, '.', 'unexplained-change', '2 file(s) changed');
+    $top->files = 2;
+    assertContains("  - 2 files changed in the main website folder\n", Sentinel\Digest::forClient('Shop', 1760000000, [$top], [], [], '')['body'], 'files at the top level are not shown as "."');
 
     foreach (['hack' => ['php-in-uploads', Finding::CRITICAL, 'POSSIBLE HACK'], 'check' => ['unexpected-file', Finding::WARNING, 'UNUSUAL FILES'],
         'unresolved' => ['detection-unresolved', Finding::CRITICAL, 'EARLIER ALERT NOT RESOLVED'], 'changes' => ['sensitive-file-changed', Finding::WARNING, 'WEBSITE FILES CHANGED']] as $section => [$rule, $sev, $title]) {

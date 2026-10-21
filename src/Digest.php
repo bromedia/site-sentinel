@@ -166,7 +166,7 @@ final class Digest
         $paths = function (array $fs) use ($attached): array {
             $out = [];
             foreach ($fs as $f) {
-                $out['  - ' . ($f->files > 0 ? self::filesChanged($f->files) . ' in ' . $f->path : $f->path)] = true;
+                $out['  - ' . ($f->files > 0 ? self::filesChanged($f->files) . ' in ' . ($f->path === '.' ? 'the main website folder' : $f->path) : $f->path)] = true;
             }
             return self::capped(array_keys($out), $attached);
         };
