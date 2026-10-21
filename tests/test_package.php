@@ -207,8 +207,18 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
         throw new RuntimeException('no welcome sent: ' . implode(' | ', $mail->subjects()));
     };
 
-    // Delivered at once: the report lists the flagged file, and nothing in the email or report is an absolute path.
-    [$home, , $dir] = packagedSite($flagged);
+    // Nothing sent holds an absolute path (they contain the hosting account name): not the site
+    // root (real or through the public_html link), the home folder, nor the sentinel folder.
+    $noPaths = function (MailBox $mail, int $i, string $home, string $www, string $dir): void {
+        $sent = $mail->sent[$i]['body'] . (string)($mail->attachment($i)['content'] ?? '');
+        foreach ([$www, (string)realpath($www), $home, (string)realpath($home), $dir] as $path) {
+            assertNotContains($path, $sent, 'an absolute path was sent');
+        }
+        assertContains('Website folder: public_html', $mail->sent[$i]['body']);
+    };
+
+    // Delivered at once: the report lists the flagged file.
+    [$home, $www, $dir] = packagedSite($flagged);
     $mail = new MailBox();
     runPackaged($dir, $mail);
     $att = $mail->attachment(0);
@@ -216,12 +226,12 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertContains('wp-content/uploads/x.php', $att['content'], 'the flagged file is listed');
     assertContains('Scan mode: setup', $att['content']);
     assertTrue(is_file($dir . '/state/reports/' . $att['name']), 'a copy is kept on the server');
-    assertNotContains($home, $att['content'] . $mail->sent[0]['body'], 'no absolute path is sent');
+    $noPaths($mail, 0, $home, $www, $dir);
     assertNotContains('could not be', $mail->sent[0]['body']);
     assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'delivered, so nothing is waiting');
 
     // Mail down at setup: the retry carries the same report, from the server copy.
-    [, , $dir] = packagedSite($flagged);
+    [$home, $www, $dir] = packagedSite($flagged);
     $mail = new MailBox();
     $mail->failing = true;
     runPackaged($dir, $mail);
@@ -233,9 +243,10 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertTrue($att !== null, 'the retried welcome carries the report');
     assertSame(basename((string)$pending['report']), $att['name']);
     assertContains('wp-content/uploads/x.php', $att['content']);
+    $noPaths($mail, $welcomeIndex($mail), $home, $www, $dir);
 
     // The server copy gone before the retry: sent without it, and says so, above the footer.
-    [, , $dir] = packagedSite($flagged);
+    [$home, $www, $dir] = packagedSite($flagged);
     $mail = new MailBox();
     $mail->failing = true;
     runPackaged($dir, $mail);
@@ -247,12 +258,12 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertSame(null, $mail->attachment($i), 'nothing to attach');
     $body = $mail->sent[$i]['body'];
     assertContains('The full report could not be attached.', $body);
-    assertNotContains($dir, $body);
+    $noPaths($mail, $i, $home, $www, $dir);
     assertTrue(strpos($body, 'The full report could not be attached.') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
     assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'and it is not retried again');
 
     // The report cannot be saved: setup completes and the email goes out, saying why.
-    [, , $dir] = packagedSite($flagged);
+    [$home, $www, $dir] = packagedSite($flagged);
     mkdir($dir . '/state', 0700);
     file_put_contents($dir . '/state/reports', 'in the way');
     $mail = new MailBox();
@@ -262,7 +273,7 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertSame(null, $mail->attachment(0));
     $body = $mail->sent[0]['body'];
     assertContains('The full report could not be saved: ', $body);
-    assertNotContains($dir, $body);
+    $noPaths($mail, 0, $home, $www, $dir);
     assertTrue(strpos($body, 'could not be saved') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
 
     // A clean setup has no report.
@@ -271,6 +282,22 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     runPackaged($dir, $mail);
     assertSame(null, $mail->attachment(0));
     assertTrue(!is_dir($dir . '/state/reports'), 'no report was written');
+});
+
+t('Config: the website folder is shown to a client as configured, never as an absolute path', function () {
+    [, $www, $dir] = packagedSite();
+    $label = function (string $setting, string $audience) use ($www, $dir): string {
+        $c = Config::fromArray(['site_root' => $www, 'state_dir' => $dir . '/state', 'audience' => $audience, 'site_name' => 'Shop']);
+        $c->siteRootSetting = $setting;
+        return $c->siteFolderLabel();
+    };
+    assertSame('public_html', $label('../public_html', 'client'));
+    assertSame('public_html', $label('./../../public_html/', 'client'));
+    assertSame('sites/shop', $label('../sites/shop', 'client'));
+    assertSame('public_ssl', $label('/usr/home/someone/public_ssl', 'client'), 'absolute: the last segment only');
+    assertSame('clientftp', $label('', 'client'), 'not loaded from a file: the folder name');
+    assertSame('clientftp', $label('..', 'client'));
+    assertSame(realpath($www), $label('../public_html', 'technical'), 'technical output is unchanged');
 });
 
 t('run: no baseline and no marker is reported, never silently re-baselined', function () {
@@ -886,7 +913,8 @@ t('run: a package unzipped into an extra folder (site-sentinel/sentinel/) still 
     $mail = new MailBox();
     $r = runPackaged($dir, $mail);
     assertSame(0, $r['exit'], $r['text']);
-    assertContains('Website folder: ' . realpath($www), $mail->sent[0]['body']);
+    assertContains('Website folder: public_html', $mail->sent[0]['body'], 'the folder as configured, found one level up');
+    assertNotContains(realpath($www), $mail->sent[0]['body']);
     $doc = runPackaged($dir, $mail, ['doctor']);
     assertContains('WARN: site root found one folder further up than sentinel.json says', $doc['text']);
     assertContains('check that the cron command points at ' . $dir . '/sentinel.php', $doc['text']);

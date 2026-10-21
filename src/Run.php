@@ -221,7 +221,7 @@ final class Run
             }
             $body = array_merge($body, [
                 'What was set up',
-                '  Website folder: ' . $config->siteRoot,
+                '  Website folder: ' . $config->siteFolderLabel(),
                 '  Files recorded: ' . number_format($recorded),
                 '  WordPress: ' . self::wordpressLine($config, $scan, $who),
             ], $config->hasWordPress() ? ['  Plugin and theme updates: ' . self::policy($config->autoAcceptUnverifiedUpdates)] : [], [

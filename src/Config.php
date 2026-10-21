@@ -64,6 +64,8 @@ final class Config
     private $extraExclude = [];
     /** The packaged site_root was missing, and public_html was found one folder further up. */
     public $siteRootFoundHigher = false;
+    /** site_root as written in sentinel.json (after the one-level-up fallback), before it was resolved; '' when not loaded from a file. */
+    public $siteRootSetting = '';
     /** WordPress installs in subfolders (Profile::nestedWordPress), found each time the config is loaded. */
     public $nestedWordPress = [];
     /** @var string[] their uploads folders and anchored sensitive paths; never written back to the config file */
@@ -92,6 +94,7 @@ final class Config
         if ($higher) {
             $raw['site_root'] = '../' . self::PACKAGE_SITE_ROOT;
         }
+        $setting = (string)($raw['site_root'] ?? '');
         foreach (['site_root', 'state_dir', 'settings_file'] as $key) {
             if (isset($raw[$key]) && is_string($raw[$key]) && $raw[$key] !== '' && $raw[$key][0] !== '/') {
                 $raw[$key] = $dir . '/' . $raw[$key];
@@ -114,6 +117,7 @@ final class Config
         }
         $c = self::fromArray($raw);
         $c->siteRootFoundHigher = $higher;
+        $c->siteRootSetting = $setting;
         $c->settingsProblem = $problem;
         $c->settings = $settings !== null ? $settings->toArray() : [];
         return $c;
@@ -151,6 +155,24 @@ final class Config
             $raw['heartbeat_url'] = $s->heartbeat;
         }
         return $raw;
+    }
+
+    /**
+     * The website folder as shown to its owner: for the client audience, as configured without
+     * the absolute path (which contains the hosting account name), e.g. "public_html".
+     */
+    public function siteFolderLabel(): string
+    {
+        if ($this->audience !== 'client') {
+            return $this->siteRoot;
+        }
+        $setting = $this->siteRootSetting;
+        if ($setting !== '' && $setting[0] === '/') {
+            $label = basename(rtrim($setting, '/')); // an absolute setting: only its last segment
+        } else {
+            $label = rtrim((string)preg_replace('#^(?:\.{1,2}(?:/+|$))+#', '', $setting), '/');
+        }
+        return $label === '' || $label === '.' || $label === '..' ? basename($this->siteRoot) : $label;
     }
 
     public static function fromArray(array $raw): Config
