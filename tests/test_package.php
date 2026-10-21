@@ -558,7 +558,8 @@ t('run: a settings change names every changed setting, in the previous settings\
     assertSame('Site Sentinel settings changed for My website', $notice['subject'], 'the old name, not the new text');
     assertContains('Contact named in alerts: Support (help@evil.example) (was: Bro Media (info@bromedia.co.za))', $notice['body']);
     assertContains('Website name: My website - maintenance', $notice['body']);
-    assertContains('If you did not, contact Bro Media (info@bromedia.co.za) straight away', $notice['body']);
+    assertContains('If you did not, forward this email to the contact below straight away', $notice['body']);
+    assertContains("\nQuestions about this email? Contact Bro Media (info@bromedia.co.za).", $notice['body'], 'the previous, trusted contact');
 });
 
 t('run: a settings change notice that could not be sent is retried until it goes out', function () {
@@ -592,7 +593,8 @@ t('Client alerts are plain language with the contact, no commands, technical det
     $m = end($mail->sent);
     assertSame('Security alert: My website may have been hacked', $m['subject']);
     assertContains("POSSIBLE HACK", $m['body']);
-    assertContains('contact Bro Media (info@bromedia.co.za) today', $m['body']);
+    assertContains('forward this email to the contact below today', $m['body']);
+    assertContains("\nQuestions about this email? Contact Bro Media (info@bromedia.co.za).", $m['body']);
     assertContains('WEBSITE FILES CHANGED', $m['body']);
     assertNotContains('php sentinel.php', $m['body']);
     assertContains('Technical details for your web developer', $m['body']);
@@ -653,6 +655,7 @@ t('run: the alert still goes out when the report cannot be saved', function () {
     $note = strpos($body, 'The full report could not be saved');
     assertTrue($note < strpos($body, "\n--\n"), 'the note comes before the developer section');
     assertTrue($note > strpos($body, 'WEBSITE FILES CHANGED'), 'the note sits with the footer area, after the summary');
+    assertTrue($note < strpos($body, 'Questions about this email?'), 'the note belongs to the body, above the contact footer');
 });
 
 t('run: a large change list is listed in full and the attachment uses Report::CAP', function () {
@@ -850,4 +853,161 @@ t('build/package.php produces the sentinel folder ZIP with everything an install
     }
     assertContains('sentinel.php run', (string)$zip->getFromName('sentinel/INSTALL-XNEELO.txt'));
     $zip->close();
+});
+
+const DEFAULT_CONTACT = 'Bro Media (info@bromedia.co.za)';
+const CONTACT_FOOTER = 'Questions about this email? Contact Bro Media (info@bromedia.co.za).';
+
+/** Every client email the owner can get, as [label => body], for a packaged site using the shipped contact. */
+function clientEmailsForContact(): array
+{
+    $out = [];
+    $f = function (int $sev, string $path, string $rule) {
+        return new Sentinel\Finding($sev, $path, $rule, 'message for ' . $rule, 'h');
+    };
+    $groups = [
+        'hack' => $f(Sentinel\Finding::CRITICAL, 'wp-content/uploads/a.php', 'php-in-uploads'),
+        'unresolved' => $f(Sentinel\Finding::WARNING, 'wp-content/plugins/x/x.php', 'detection-unresolved'),
+        'check' => $f(Sentinel\Finding::WARNING, 'wp-content/x.php', 'unexpected-file'),
+        'changes' => $f(Sentinel\Finding::WARNING, 'wp-content/themes/t/functions.php', 'unexplained-change'),
+        'monitoring' => $f(Sentinel\Finding::CRITICAL, 'sentinel', 'run-error'),
+    ];
+    foreach ($groups as $name => $finding) {
+        $out["alert: $name"] = Sentinel\Digest::forClient('Shop', 1760000000, [$finding], ['info line'], ['note line'], DEFAULT_CONTACT)['body'];
+    }
+    $out['alert: every group'] = Sentinel\Digest::forClient('Shop', 1760000000, array_values($groups), [], [], DEFAULT_CONTACT)['body'];
+
+    // Welcome on a clean site, and on a site that already holds a flagged file.
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $out['welcome'] = $mail->sent[0]['body'];
+    [, , $dir] = packagedSite(['wp-content/uploads/x.php' => '<?php eval($_POST["c"]);']);
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $out['welcome with flagged files'] = $mail->sent[0]['body'];
+
+    // A real alert, a settings problem and a missing record, from a set-up site.
+    [, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    putFile($www, 'wp-content/uploads/2026/cache.php', '<?php eval($_POST["c"]);');
+    runPackaged($dir, $mail);
+    $out['alert: end to end'] = end($mail->sent)['body'];
+    $settings = (string)file_get_contents($dir . '/settings.txt');
+    file_put_contents($dir . '/settings.txt', str_replace('email = owner@client.example', 'emial = owner@client.example', $settings));
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $out['settings problem'] = $mail->since($n)[0]['body'];
+    file_put_contents($dir . '/settings.txt', $settings);
+    unlink($dir . '/state/baseline.txt');
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $out['records missing'] = end($mail->sent)['body'];
+
+    // Setup that cannot finish because the sentinel folder is inside the website.
+    [, $www] = packagedSite();
+    $dir = $www . '/sentinel';
+    mkdir($dir);
+    foreach (['sentinel.json', 'settings.txt', 'SETUP-PENDING.txt'] as $file) {
+        copy(dirname(__DIR__) . '/package/' . $file, $dir . '/' . $file);
+    }
+    file_put_contents($dir . '/sentinel.php', '<?php');
+    file_put_contents($dir . '/settings.txt', str_replace('you@example.com', 'owner@client.example', (string)file_get_contents($dir . '/settings.txt')));
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/sentinel.json', json_encode(['site_root' => '..', 'state_dir' => 'state', 'settings_file' => 'settings.txt', 'audience' => 'client']));
+    runPackaged($dir, $mail);
+    $out['setup placement'] = end($mail->sent)['body'];
+
+    // A sentinel.json that cannot be used on a site that was set up before: the settings last used are trusted.
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    $cfg['audience'] = 'nonsense';
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg));
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    assertSame(1, count($mail->since($n)), 'the configuration error is emailed');
+    $out['configuration error'] = $mail->since($n)[0]['body'];
+    return $out;
+}
+
+t('client emails name the contact once, in the footer', function () {
+    foreach (clientEmailsForContact() as $label => $body) {
+        assertSame(1, substr_count($body, 'Bro Media'), "$label: the contact once\n$body");
+        assertContains("\n" . CONTACT_FOOTER, $body, $label);
+        $lines = explode("\n", $body);
+        $at = array_search(CONTACT_FOOTER, $lines, true);
+        assertTrue($at !== false, "$label: the footer is a line of its own");
+        assertSame('', $lines[$at - 1], "$label: a blank line above the footer");
+        assertTrue(!isset($lines[$at + 1]) || $lines[$at + 1] === '--' || trim($lines[$at + 1]) === '', "$label: the footer closes the owner-facing part");
+        assertContains('the contact below', $body, "$label: the body refers to the footer");
+        assertNotContains('php sentinel.php', $body, $label);
+    }
+});
+
+t('client emails name the contact once: every alert states the owner\'s next action in the body', function () {
+    foreach (clientEmailsForContact() as $label => $body) {
+        if (strpos($label, 'alert') !== 0) {
+            continue;
+        }
+        $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+        assertTrue(preg_match('/[Ff]orward this email to the contact below/', $owner) === 1, "$label: next action\n$owner");
+        assertNotContains('attach', $owner, "$label: does not rely on the attachment");
+    }
+});
+
+t('client emails name the contact once: the settings notice names the previous contact in the footer', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $text = (string)file_get_contents($dir . '/settings.txt');
+    file_put_contents($dir . '/settings.txt', str_replace('contact = Bro Media (info@bromedia.co.za)', 'contact = Support (help@evil.example)', $text));
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $body = $mail->since($n)[0]['body'];
+    assertContains('Contact named in alerts: Support (help@evil.example) (was: ' . DEFAULT_CONTACT . ')', $body);
+    $rest = str_replace('Contact named in alerts: Support (help@evil.example) (was: ' . DEFAULT_CONTACT . ')', '', $body);
+    assertSame(1, substr_count($rest, 'Bro Media'), "the old contact once, outside the change list\n$body");
+    assertSame(0, substr_count($rest, 'help@evil.example'), 'the new contact only in the change list');
+    assertContains("\n" . CONTACT_FOOTER, $body);
+    assertContains('forward this email to the contact below', $body);
+
+    // Another change, to an unrelated setting: the footer follows the settings in use before the edit.
+    $n = count($mail->sent);
+    file_put_contents($dir . '/settings.txt', str_replace('website = My website', 'website = Shop', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    assertContains('Contact Support (help@evil.example).', $mail->since($n)[0]['body']);
+});
+
+t('client emails name the contact once: with no contact there is no footer and the body says your web developer', function () {
+    foreach (['alert' => true, 'welcome' => false] as $kind => $alert) {
+        [, $www, $dir] = packagedSite();
+        file_put_contents($dir . '/settings.txt', str_replace('contact = Bro Media (info@bromedia.co.za)', 'contact =', (string)file_get_contents($dir . '/settings.txt')));
+        $mail = new MailBox();
+        runPackaged($dir, $mail);
+        $body = $mail->sent[0]['body'];
+        if ($alert) {
+            putFile($www, 'wp-content/uploads/2026/cache.php', '<?php eval($_POST["c"]);');
+            runPackaged($dir, $mail);
+            $body = end($mail->sent)['body'];
+            assertContains('forward this email to your web developer', $body);
+        } else {
+            assertContains('forward it to your web developer', $body);
+        }
+        assertNotContains('Questions about this email?', $body, $kind);
+        assertNotContains('the contact below', $body, $kind);
+        assertNotContains('Bro Media', $body, $kind);
+    }
+    $f = new Sentinel\Finding(Sentinel\Finding::WARNING, 'a.php', 'unexpected-file', 'm');
+    foreach (['check', 'changes', 'monitoring', 'unresolved'] as $g) {
+        $rule = ['check' => 'unexpected-file', 'changes' => 'unexplained-change', 'monitoring' => 'run-error', 'unresolved' => 'detection-unresolved'][$g];
+        $b = Sentinel\Digest::forClient('Shop', 1760000000, [new Sentinel\Finding(Sentinel\Finding::WARNING, 'a.php', $rule, 'm')], [], [], '')['body'];
+        assertContains('forward this email to your web developer', $b, $g);
+        assertNotContains('Questions about this email?', $b, $g);
+    }
+    assertSame('', Sentinel\Digest::footer(''));
+    assertSame(CONTACT_FOOTER, Sentinel\Digest::footer(DEFAULT_CONTACT));
 });

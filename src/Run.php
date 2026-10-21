@@ -146,7 +146,7 @@ final class Run
             }
             if ($inside) {
                 $msg = self::placementMessage($config->siteRoot);
-                self::alertOnce($state, $channels, $now, 'setup-placement', "Site Sentinel setup could not finish on $site", "Site Sentinel was not started.\n\n$msg\n\nIf you need help, contact $who.\n");
+                self::alertOnce($state, $channels, $now, 'setup-placement', "Site Sentinel setup could not finish on $site", self::text(self::withFooter(['Site Sentinel was not started.', '', $msg, '', "Please forward this email to $who."], $config->contact)));
                 return ['exit' => 2, 'lines' => ['setup failed: ' . $msg]];
             }
 
@@ -200,7 +200,7 @@ final class Run
                 }
                 $body[] = '';
                 $body[] = 'These files were not recorded as normal, so Site Sentinel keeps reporting them until they';
-                $body[] = "have been dealt with. Please contact $who today and forward this email.";
+                $body[] = "have been dealt with. Please forward this email to $who today.";
                 $body[] = 'The rest of the website is being watched from now on.';
                 $body[] = '';
             }
@@ -216,19 +216,19 @@ final class Run
                 '  The website is checked each time the scheduled job runs, with a deeper scan once a day.',
                 "  You will only hear from Site Sentinel when something needs attention.",
                 '',
-                "If you ever receive an alert, contact $who.",
+                "If you ever receive an alert, forward it to $who.",
                 '',
                 'This email is also the test that alerts reach you: if it landed in spam, mark it as not spam.',
             ]);
+            $developer = [];
             if ($flagged) {
-                $body[] = '';
-                $body[] = '--';
-                $body[] = 'Technical details for your web developer:';
+                $developer[] = '--';
+                $developer[] = 'Technical details for your web developer:';
                 foreach ($scan['findings'] as $f) {
-                    $body[] = '  ' . Finding::label($f->severity) . ' ' . $f->rule . ' ' . $f->path . ': ' . $f->message . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
+                    $developer[] = '  ' . Finding::label($f->severity) . ' ' . $f->rule . ' ' . $f->path . ': ' . $f->message . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
                 }
-                $body[] = '  These files are not in the baseline and are reported again on later runs. Clean or';
-                $body[] = '  remove a file, or if it is harmless, dismiss it by its id; then accept --path=<file>.';
+                $developer[] = '  These files are not in the baseline and are reported again on later runs. Clean or';
+                $developer[] = '  remove a file, or if it is harmless, dismiss it by its id; then accept --path=<file>.';
             }
             $notes = array_merge($scan['notes'], array_map(function ($l) {
                 return sprintf("'%s' is a symlink to a directory (%s) and is not monitored.", $l[0], $l[1]);
@@ -237,13 +237,16 @@ final class Run
                 $notes[] = 'Optional: no heartbeat is set. A "heartbeat =" line in settings.txt lets an outside service (for example healthchecks.io) warn you if Sentinel ever stops running; nothing on this server can notice that.';
             }
             if ($notes) {
-                $body[] = '';
-                $body[] = '--';
-                $body[] = 'Notes for your web developer:';
+                if ($developer) {
+                    $developer[] = '';
+                }
+                $developer[] = '--';
+                $developer[] = 'Notes for your web developer:';
                 foreach ($notes as $n) {
-                    $body[] = '  - ' . $n;
+                    $developer[] = '  - ' . $n;
                 }
             }
+            $body = self::withFooter($body, $config->contact, $developer);
             // Kept until it has gone out, and retried on later runs; the setup itself is not redone.
             $subject = $flagged ? "Security alert: Site Sentinel is now protecting $site and found possible hacking" : "Site Sentinel is now protecting $site";
             $state->writeJson(self::WELCOME, ['subject' => $subject, 'body' => self::text($body)]);
@@ -291,7 +294,7 @@ final class Run
         }
         if ($failed) {
             $which = $nested ? ' for ' . implode(', ', $failed) : '';
-            return $line . ", but the official WordPress checksums could not be downloaded$which, so WordPress's own files were recorded without being compared to the official copies. Please ask $who to look into this.";
+            return $line . ", but the official WordPress checksums could not be downloaded$which, so WordPress's own files were recorded without being compared to the official copies. Please forward this email to $who so they can look into this.";
         }
         return $line . ($nested && count($config->wordpressInstalls()) > 1 ? ', each checked against the official WordPress checksums' : ', checked against the official WordPress checksums');
     }
@@ -337,7 +340,8 @@ final class Run
             $after = self::recipients($config);
             $new = $config->settings;
             $site = $old !== null && (string)$old['website'] !== '' ? (string)$old['website'] : $config->siteName;
-            $who = self::who($old !== null ? (string)$old['contact'] : $config->contact);
+            $contact = $old !== null ? (string)$old['contact'] : $config->contact; // the trusted one, not the edited one
+            $who = self::who($contact);
 
             $body = ["The Site Sentinel settings for $site were changed:", ''];
             $labels = [
@@ -379,7 +383,7 @@ final class Run
                 }
             }
             $body[] = '';
-            $body[] = "If you made this change, there is nothing to do. If you did not, contact $who straight away:";
+            $body[] = "If you made this change, there is nothing to do. If you did not, forward this email to $who straight away:";
             $body[] = 'someone may be trying to redirect the security alerts for your website.';
 
             $notify = $channels;
@@ -387,7 +391,7 @@ final class Run
             if ($removed) {
                 $notify[] = new Channel(new EmailNotifier($removed, (string)($new['from'] ?? ''), $mailer), Finding::INFO);
             }
-            $r = (new Alerter($notify))->send("Site Sentinel settings changed for $site", self::text($body), Finding::CRITICAL);
+            $r = (new Alerter($notify))->send("Site Sentinel settings changed for $site", self::text(self::withFooter($body, $contact)), Finding::CRITICAL);
             $delivered = $r['attempted'] > 0 && strpos(implode("\n", $r['results']), 'FAILED') === false;
             if ($delivered) {
                 $check->trust('settings');
@@ -429,9 +433,10 @@ final class Run
             'The problem:',
             '  ' . $config->settingsProblem,
             '',
-            'Please correct settings.txt, or contact ' . self::who($config->contact) . '. Until it is corrected,',
+            'Please correct settings.txt, or forward this email to ' . self::who($config->contact) . '. Until it is corrected,',
             'changes made in settings.txt have no effect.',
         ];
+        $body = self::withFooter($body, $config->contact);
         self::alertOnce($state, $channels, $now, 'settings-problem:' . $config->settingsProblem, "Site Sentinel settings problem on $site", self::text($body));
         return ['settings problem: ' . $config->settingsProblem . ' (using the last settings that worked)'];
     }
@@ -445,18 +450,19 @@ final class Run
             $channels[] = new Channel(new EmailNotifier($extra, (string)($config->settings['from'] ?? ''), $mailer), Finding::INFO);
         }
         $site = $config->siteName;
-        $body = [
+        $contact = $old !== null ? (string)$old['contact'] : $config->contact; // the trusted one
+        $body = self::withFooter([
             "Site Sentinel's record of the files of $site is missing, although it was set up before,",
             'so it cannot check the website. Someone who can change the website\'s files may have removed it.',
             '',
-            'Please contact ' . self::who($old !== null ? (string)$old['contact'] : $config->contact) . ' and forward this email.',
-            '',
+            'Please forward this email to ' . self::who($contact) . '.',
+        ], $contact, [
             '--',
             'Technical details for your web developer:',
             '  ' . $state->path('baseline.txt') . ' is missing, but the state folder shows an earlier setup.',
             '  Sentinel will not set itself up again over an earlier install. To start from scratch, check',
             '  the site, delete the whole state folder and create ' . self::MARKER . ' next to sentinel.php.',
-        ];
+        ]);
         self::alertOnce($state, $channels, $now, 'records-missing', "Security alert: Site Sentinel's records were removed on $site", self::text($body));
         return ['exit' => 2, 'lines' => ['error: the baseline is missing on a site that was set up before; see the alert email']];
     }
@@ -492,9 +498,30 @@ final class Run
         return array_values(array_unique($out));
     }
 
+    /** How a body sentence refers to the contact: "the contact below" (named once, in the footer) or the web developer. */
     private static function who(string $contact): string
     {
-        return $contact !== '' ? $contact : 'your web developer';
+        return Digest::whom($contact);
+    }
+
+    /**
+     * Closes the owner-facing lines with the contact footer (after a blank line, directly above
+     * the developer section when there is one), then adds that developer section.
+     *
+     * @param string[] $body
+     * @param string[] $developer
+     * @return string[]
+     */
+    private static function withFooter(array $body, string $contact, array $developer = []): array
+    {
+        $footer = Digest::footer($contact);
+        if ($footer !== '') {
+            $body[] = '';
+            $body[] = $footer;
+        } elseif ($developer) {
+            $body[] = '';
+        }
+        return array_merge($body, $developer);
     }
 
     private static function policy(bool $auto): string

@@ -484,4 +484,15 @@ t('Digest: the report note goes above the developer section of a client email an
     assertSame('Highest severity: WARNING', $lines[2]);
     assertSame('', $lines[3]);
     assertSame('The full report could not be saved: disk full', $lines[4]);
+
+    // With a contact footer in a client email the note goes above the footer, not between it and the "--".
+    $withFooter = Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], 'Bro Media (info@bromedia.co.za)');
+    $lines = explode("\n", Sentinel\Digest::withReportNote($withFooter['body'], 'The full report could not be saved: disk full', true));
+    $at = array_search('--', $lines, true);
+    assertSame('Questions about this email? Contact Bro Media (info@bromedia.co.za).', $lines[$at - 1]);
+    assertSame('', $lines[$at - 2], 'a blank line above the footer');
+    assertSame('', $lines[$at - 4], 'and one between the body and the note');
+    assertSame('The full report could not be saved: disk full', $lines[$at - 3]);
+    $plain = explode("\n", $client['body']);
+    assertSame(count($plain) + 1, count(explode("\n", Sentinel\Digest::withReportNote($client['body'], 'x', true))), 'without a footer: one line, above the "--"');
 });

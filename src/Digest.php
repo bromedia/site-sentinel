@@ -5,6 +5,8 @@ namespace Sentinel;
 
 final class Digest
 {
+    private const FOOTER = 'Questions about this email? Contact ';
+
     private const COMPROMISE = 'Treat this as a possible compromise: keep a copy of the file for analysis, remove or restore it, then check recent logins, plugin/theme vulnerabilities and file permissions. Restore from a clean backup if it is confirmed.';
 
     private const ACTIONS = [
@@ -124,7 +126,7 @@ final class Digest
      */
     public static function forClient(string $site, int $ts, array $findings, array $info, array $notes, string $contact): array
     {
-        $who = $contact !== '' ? $contact : 'your web developer';
+        $who = self::whom($contact);
         $groups = ['hack' => [], 'unresolved' => [], 'check' => [], 'changes' => [], 'monitoring' => []];
         $top = Finding::INFO;
         foreach ($findings as $f) {
@@ -165,7 +167,7 @@ final class Digest
             $lines[] = 'POSSIBLE HACK';
             $lines[] = 'Files were found that look like hacking tools or tampering:';
             $lines = array_merge($lines, $paths($groups['hack']));
-            $lines[] = "What to do: contact $who today and forward them this email.";
+            $lines[] = "What to do: forward this email to $who today.";
             $lines[] = "Please don't delete or change anything yourself: these files help";
             $lines[] = 'show how the attacker got in.';
             $lines[] = '';
@@ -175,23 +177,25 @@ final class Digest
             $lines[] = 'These files were reported as possible hacking before and have changed or been';
             $lines[] = 'removed since, without anyone confirming the problem was dealt with:';
             $lines = array_merge($lines, $paths($groups['unresolved']));
-            $lines[] = "What to do: forward this email to $who. Until they confirm, updates to";
-            $lines[] = 'the plugins or themes involved are not approved automatically.';
+            $lines[] = "What to do: forward this email to $who. Until it is confirmed that the";
+            $lines[] = 'problem was dealt with, updates to the plugins or themes involved are not';
+            $lines[] = 'approved automatically.';
             $lines[] = '';
         }
         if ($groups['check']) {
             $lines[] = 'UNUSUAL FILES';
-            $lines[] = "These files are unusual for a website. They may be harmless, but $who";
-            $lines[] = 'should check them:';
+            $lines[] = 'These files are unusual for a website. They may be harmless, but they should be';
+            $lines[] = 'checked:';
             $lines = array_merge($lines, $paths($groups['check']));
+            $lines[] = "What to do: forward this email to $who.";
             $lines[] = '';
         }
         if ($groups['changes']) {
             $lines[] = 'WEBSITE FILES CHANGED';
             $lines[] = 'Files changed without an update that could be verified:';
             $lines = array_merge($lines, $paths($groups['changes']));
-            $lines[] = "If you or $who just installed updates or made changes, this is";
-            $lines[] = "expected. If nobody did, contact $who.";
+            $lines[] = 'If you or your web developer just installed updates or made changes, this is';
+            $lines[] = "expected. If nobody did, forward this email to $who.";
             $lines[] = '';
         }
         if ($groups['monitoring']) {
@@ -199,6 +203,9 @@ final class Digest
             $lines[] = 'Site Sentinel could not fully check the website, or its own files changed.';
             $lines[] = "Until this is fixed, problems may go unnoticed. Please forward this email to $who.";
             $lines[] = '';
+        }
+        if (self::footer($contact) !== '') {
+            $lines[] = self::footer($contact); // directly under the last section's blank line
         }
         $lines[] = '--';
         $lines[] = 'Technical details for your web developer:';
@@ -215,9 +222,22 @@ final class Digest
         return ['subject' => $subject, 'body' => implode("\n", array_map([Finding::class, 'line'], $lines)), 'top' => $top];
     }
 
+    /** The one line that names the contact; the body refers to it as "the contact below". Empty when no contact is set. */
+    public static function footer(string $contact): string
+    {
+        return $contact !== '' ? self::FOOTER . $contact . '.' : '';
+    }
+
+    /** How the body refers to the contact: the footer's, or the web developer when there is none. */
+    public static function whom(string $contact): string
+    {
+        return $contact !== '' ? 'the contact below' : 'your web developer';
+    }
+
     /**
-     * Adds a line about the report to a finished body: in a client email directly above the
-     * "--" line that opens the developer section, in a technical one just below the header.
+     * Adds a line about the report to a finished body: in a client email at the end of the
+     * owner-facing part, above the contact footer when there is one, else directly above the
+     * "--" line that opens the developer section; in a technical one just below the header.
      */
     public static function withReportNote(string $body, string $note, bool $client): string
     {
@@ -227,7 +247,12 @@ final class Digest
         if ($at === false) {
             $at = count($lines);
         }
-        array_splice($lines, (int)$at, 0, $note === '' ? [] : ($client ? [$note] : [$note, '']));
+        $at = (int)$at;
+        $footer = $client && $at > 0 && strpos($lines[$at - 1], self::FOOTER) === 0;
+        if ($footer) {
+            $at--; // the note belongs to the owner-facing body, so it goes above the footer
+        }
+        array_splice($lines, $at, 0, $note === '' ? [] : ($client && !$footer ? [$note] : [$note, '']));
         return implode("\n", $lines);
     }
 
