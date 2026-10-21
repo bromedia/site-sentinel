@@ -1411,3 +1411,23 @@ t('changed-files: the shipped settings.txt has item 5 and parses as tell me', fu
     assertSame(false, $s->quietChanges);
     assertSame('tell me', $s->toArray()['changed_files']);
 });
+
+t('changed-files: the first switch to quiet on an install set up before the setting existed is announced', function () {
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    // The stored last settings of an install from before this release have no changed_files key.
+    $state = new Sentinel\State($dir . '/state');
+    $stored = $state->readJson(Config::LAST_GOOD_SETTINGS);
+    assertTrue($stored !== [], 'settings were remembered');
+    unset($stored['changed_files']);
+    $state->writeJson(Config::LAST_GOOD_SETTINGS, $stored);
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = tell me', 'changed_files = quiet', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    $notices = array_values(array_filter($mail->sent, function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    }));
+    assertSame(1, count($notices));
+    assertContains('  Changed files: quiet (was: tell me)', $notices[0]['body']);
+    assertNotContains('only comments or formatting changed', $notices[0]['body']);
+});

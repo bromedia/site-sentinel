@@ -421,7 +421,7 @@ final class Run
                     return self::policy($v === null ? $config->autoAcceptUnverifiedUpdates : (bool)$v);
                 }
                 if ($k === 'changed_files') {
-                    return ($v === null ? $config->quietChanges : $v === 'quiet') ? 'quiet' : 'tell me';
+                    return $v === 'quiet' ? 'quiet' : 'tell me'; // absent (an install from before the setting) is the default, whatever the new config says
                 }
                 return (string)$v !== '' ? (string)$v : '(not set)';
             };
