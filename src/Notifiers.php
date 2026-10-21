@@ -32,7 +32,11 @@ final class EmailNotifier implements Notifier
             . "MIME-Version: 1.0\r\n";
         $priority = 'X-Priority: ' . ($severity >= Finding::CRITICAL ? '1' : '3') . "\r\n";
         if ($attachment !== null) {
-            $boundary = '=_sentinel_' . bin2hex(random_bytes(12));
+            try {
+                $boundary = '=_sentinel_' . bin2hex(random_bytes(12));
+            } catch (\Throwable $e) {
+                $boundary = '=_sentinel_' . sha1(uniqid('', true)); // no system randomness: the alert still goes out
+            }
             $name = (string)preg_replace('/[^A-Za-z0-9._-]/', '_', (string)$attachment['name']);
             $message = '--' . $boundary . "\r\n"
                 . "Content-Type: text/plain; charset=UTF-8\r\n"

@@ -409,14 +409,15 @@ t('run: setup on an already infected site watches the rest, keeps the flagged fi
     assertNotContains('uploads/x.php', $baseline, 'nothing flagged enters the baseline');
     assertContains('wp-content/themes/Avada/functions.php', $baseline);
 
-    // The rest of the site is watched: a change no pattern catches is still reported, by name.
+    // The rest of the site is watched: a change no pattern catches is still reported, its folder
+    // (with the count) in the email and the file itself by name in the attached report.
     file_put_contents($www . '/wp-content/themes/Avada/functions.php', "<?php include __DIR__ . '/cache.dat';");
     touch($www . '/wp-content/themes/Avada/functions.php', time() + 5);
     clearstatcache();
     $n = count($mail->sent);
     assertSame(1, runPackaged($dir, $mail)['exit']);
     $body = implode("\n", array_column($mail->since($n), 'body'));
-    assertContains('wp-content/themes/Avada', $body);
+    assertContains('  - 1 file changed in wp-content/themes/Avada', $body);
     assertContains('1 file(s) changed without a version change', $body);
     $att = $mail->attachment($n);
     assertTrue($att !== null, 'the report is attached');

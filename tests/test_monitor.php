@@ -556,3 +556,22 @@ t('Monitor: a client alert gives email the "attached" wording; other channels ke
     assertContains($sentence, (string)($att['body'] ?? ''), 'the body for a channel that attaches the file says so');
     assertSame(str_replace($sentence . "\n\n", '', (string)$att['body']), $n->sent[0]['body'], 'otherwise the same email');
 });
+
+t('Monitor: a report saved but not attachable is said to be on the server, not "could not be saved"', function () {
+    [$root, $config, $state] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a'], ['audience' => 'client']);
+    $n = new FakeNotifier();
+    $unreadable = function (string $file, string $shown): array {
+        throw new RuntimeException('cannot read report'); // as when the saved file cannot be read back
+    };
+    $m = new Monitor($config, $state, new FakeHttp(), [new Channel($n, Finding::WARNING)], [], new FakeClock(), $unreadable);
+    bump($root, 'a.php', '<?php // a edited');
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(null, $n->sent[0]['attachment']);
+    $kept = glob($state->path('reports') . '/sentinel-report-*.txt');
+    assertSame(1, count($kept), 'the report was saved');
+    $body = $n->sent[0]['body'];
+    assertContains('The full report could not be attached; it is saved on the server: ' . \Sentinel\Report::displayPath($state->dir(), basename($kept[0])), $body);
+    assertNotContains('could not be saved', $body);
+    assertNotContains('attached report', $body);
+    assertNotContains($state->dir(), $body, 'the server path is relative');
+});

@@ -15,12 +15,14 @@ final class Monitor
     /** @var array<string,string> */
     private $selfFiles;
     private $clock;
+    private $attach;
 
     /**
      * @param Channel[] $channels
      * @param array<string,string> $selfFiles label => path, tracked by SelfCheck
+     * @param callable|null $attach turns a saved report into an attachment (Report::attachment; replaceable in tests)
      */
-    public function __construct(Config $config, State $state, HttpClient $http, array $channels, array $selfFiles, ?callable $clock = null)
+    public function __construct(Config $config, State $state, HttpClient $http, array $channels, array $selfFiles, ?callable $clock = null, ?callable $attach = null)
     {
         $this->config = $config;
         $this->state = $state;
@@ -30,6 +32,7 @@ final class Monitor
         $this->clock = $clock ?? function (): int {
             return time();
         };
+        $this->attach = $attach ?? [Report::class, 'attachment'];
     }
 
     /** @return array{exit:int, lines:string[]} */
@@ -235,6 +238,8 @@ final class Monitor
             $digest = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes']);
             // The full record goes with every alert: findings, every changed file and what became of it.
             $attachment = null;
+            $note = '';
+            $file = null;
             try {
                 $file = Report::write(
                     $this->state->path('reports'),
@@ -256,10 +261,20 @@ final class Monitor
                     $a['outcomes'],
                     $a['notes']
                 );
-                $attachment = Report::attachment($file, Report::displayPath($this->state->dir(), basename($file)));
             } catch (\Throwable $e) {
                 // An alert without its report beats no alert: say why, and send it anyway.
-                $digest['body'] = Digest::withReportNote($digest['body'], 'The full report could not be saved: ' . $this->plainReason($e), $this->config->audience === 'client');
+                $note = 'The full report could not be saved: ' . $this->plainReason($e);
+            }
+            if ($file !== null) {
+                $shown = Report::displayPath($this->state->dir(), basename($file));
+                try {
+                    $attachment = ($this->attach)($file, $shown);
+                } catch (\Throwable $e) {
+                    $note = 'The full report could not be attached; it is saved on the server: ' . $shown;
+                }
+            }
+            if ($note !== '') {
+                $digest['body'] = Digest::withReportNote($digest['body'], $note, $this->config->audience === 'client');
             }
             if ($attachment !== null && $this->config->audience === 'client') {
                 // Only the email that really carries the file tells the owner it is attached; every
