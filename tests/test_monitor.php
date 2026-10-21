@@ -847,3 +847,24 @@ t('Quiet log: an oversized, garbage or odd quiet-log.json never stops a run, and
     $q->add(["wp-content/themes/t/caf\xE9.php"], 1700000000);
     assertSame('wp-content/themes/t/caf?.php', (new Sentinel\QuietLog($state))->pending()['entries'][1]['path']);
 });
+
+t('Quiet log: when something was last accepted quietly survives the list being cleared by an alert', function () {
+    $state = new State(tmpdir());
+    $q = new Sentinel\QuietLog($state);
+    assertSame(0, $q->last(), 'nothing yet');
+    $q->add(['a.php'], 1700000500);
+    $q->add(['b.php'], 1700000100); // an older timestamp does not move it back
+    assertSame(1700000500, (new Sentinel\QuietLog($state))->last());
+    $q = new Sentinel\QuietLog($state);
+    $q->clear();
+    $q = new Sentinel\QuietLog($state);
+    assertSame([], $q->pending()['entries']);
+    assertSame(1700000500, $q->last(), 'kept across clear()');
+    assertTrue(!array_key_exists('last', $q->pending()), 'not part of what the report lists');
+
+    // A log from before (no "last") gives its newest entry; a damaged "last" is ignored.
+    $state->writeJson('quiet-log.json', ['entries' => [['path' => 'x.php', 'group' => '.', 'ts' => 1700000300]], 'dropped' => 0]);
+    assertSame(1700000300, (new Sentinel\QuietLog($state))->last());
+    $state->writeJson('quiet-log.json', ['entries' => [], 'dropped' => 0, 'last' => 'soon']);
+    assertSame(0, (new Sentinel\QuietLog($state))->last());
+});

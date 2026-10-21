@@ -88,9 +88,9 @@ final class Doctor
             $lines[] = 'Quiet will not apply while a malware scanner that is set up cannot run (' . implode('; ', $cannotRun) . '): changes are emailed as usual.';
         }
         if (is_file($c->stateDir . '/' . QuietLog::FILE)) { // the state folder exists, so it is not created here
-            $entries = (new QuietLog(new State($c->stateDir)))->pending()['entries'];
-            if ($entries) {
-                $lines[] = 'Last accepted quietly: ' . self::when(max(array_column($entries, 'ts')));
+            $last = (new QuietLog(new State($c->stateDir)))->last(); // kept when an alert clears the list
+            if ($last > 0) {
+                $lines[] = 'Last accepted quietly: ' . self::when($last);
             }
         }
         $lines[] = 'Scan budget: ' . $c->budgetSeconds . 's / ' . $c->budgetMemoryMb . 'MB for file comparison; analysis and initialisation can take longer.';

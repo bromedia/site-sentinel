@@ -39,6 +39,8 @@ final class Config
     public $wpChecksums = true;
     /** Accept plugin/theme version bumps whose files cannot be verified against an official source (legacy behaviour). */
     public $autoAcceptUnverifiedUpdates = false;
+    /** The developer's update policy (sentinel.json), which applies when settings.txt has no line for it. */
+    public $autoAcceptDefault = false;
     /** Who alert recipients should contact; shown in client alerts. */
     public $contact = '';
     /** 'technical' alerts show commands; 'client' alerts are plain language with no commands. */
@@ -115,6 +117,7 @@ final class Config
             }
         }
         $settingsFile = (string)($raw['settings_file'] ?? '');
+        $autoAcceptDefault = (bool)($raw['auto_accept_unverified_updates'] ?? false); // read as fromArray reads it
         $problem = '';
         $settings = null;
         if ($settingsFile !== '') {
@@ -134,6 +137,7 @@ final class Config
         $c->accountHome = self::accountHomeFor($dir, $configured);
         $c->siteRootSetting = $setting;
         $c->settingsProblem = $problem;
+        $c->autoAcceptDefault = $autoAcceptDefault;
         $c->settings = $settings !== null ? $settings->toArray() : [];
         return $c;
     }
@@ -301,6 +305,7 @@ final class Config
         $c->updateGraceSeconds = self::int($raw, 'update_grace_seconds', 120, 0);
         $c->wpChecksums = (bool)($raw['wp_checksums'] ?? true);
         $c->autoAcceptUnverifiedUpdates = (bool)($raw['auto_accept_unverified_updates'] ?? false);
+        $c->autoAcceptDefault = $c->autoAcceptUnverifiedUpdates; // load() replaces it with the value before settings.txt
         $c->contact = trim((string)($raw['contact'] ?? ''));
         $c->audience = (string)($raw['audience'] ?? 'technical');
         if (!in_array($c->audience, ['technical', 'client'], true)) {

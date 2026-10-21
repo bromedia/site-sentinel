@@ -6,7 +6,8 @@ namespace Sentinel;
 /**
  * What was accepted quietly since the last alert email was delivered, kept in state/quiet-log.json
  * so the next alert's report can list it. Only the newest CAP entries are kept; `dropped` counts the
- * older ones that were let go, so the report can say how many are not listed.
+ * older ones that were let go, so the report can say how many are not listed. `last` is when
+ * something was last accepted quietly; it is kept when the list is cleared, for doctor.
  */
 final class QuietLog
 {
@@ -19,6 +20,8 @@ final class QuietLog
     /** @var array<int,array{path:string,group:string,ts:int}> */
     private $entries = [];
     private $dropped = 0;
+    /** Unix time something was last accepted quietly, 0 if never; survives clear(). */
+    private $last = 0;
 
     public function __construct(State $state)
     {
@@ -35,6 +38,9 @@ final class QuietLog
         }
         $d = $data['dropped'] ?? 0;
         $this->dropped = is_int($d) ? max(0, $d) : 0;
+        $last = $data['last'] ?? null;
+        // A log written before `last` existed: its newest entry says it.
+        $this->last = is_int($last) ? max(0, $last) : ($this->entries && !array_key_exists('last', $data) ? max(array_column($this->entries, 'ts')) : 0);
         $this->trim();
     }
 
@@ -62,12 +68,13 @@ final class QuietLog
                 $path = (string)preg_replace('/[^\x00-\x7F]/', '?', $path);
             }
             $this->entries[] = ['path' => $path, 'group' => Analyzer::groupOf($path, $nested), 'ts' => $ts];
+            $this->last = max($this->last, $ts);
         }
         $this->trim();
         $this->save();
     }
 
-    /** The list starts again: its entries have been shown in an alert that was delivered. */
+    /** The list starts again: its entries have been shown in an alert that was delivered. `last` stays. */
     public function clear(): void
     {
         if (!$this->entries && $this->dropped === 0) {
@@ -84,8 +91,14 @@ final class QuietLog
         return ['entries' => $this->entries, 'dropped' => $this->dropped];
     }
 
+    /** When something was last accepted quietly (unix time), 0 if never. */
+    public function last(): int
+    {
+        return $this->last;
+    }
+
     private function save(): void
     {
-        $this->state->writeJson(self::FILE, $this->pending());
+        $this->state->writeJson(self::FILE, $this->pending() + ['last' => $this->last]);
     }
 }

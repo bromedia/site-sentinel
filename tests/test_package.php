@@ -1431,3 +1431,57 @@ t('changed-files: the first switch to quiet on an install set up before the sett
     assertContains('  Changed files: quiet (was: tell me)', $notices[0]['body']);
     assertNotContains('only comments or formatting changed', $notices[0]['body']);
 });
+
+t('changed-files: doctor still shows the last quiet acceptance after an alert has cleared the list', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $state = new Sentinel\State($dir . '/state');
+    $ts = gmmktime(9, 5, 7, 10, 20, 2026);
+    (new Sentinel\QuietLog($state))->add(['older.php'], $ts);
+    (new Sentinel\QuietLog($state))->clear(); // as a delivered alert does
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains("Last accepted quietly: 2026-10-20 09:05:07 UTC\n", $text);
+});
+
+t('settings notice: an update policy line added where the stored settings had none is compared with the developer default', function () {
+    $line = "approve_plugin_updates_automatically = yes\n";
+    $cases = [
+        // [sentinel.json auto_accept_unverified_updates, line added, expected notice line]
+        'default, yes added' => [null, 'yes', '  Plugin and theme updates: approved automatically (was: each one reported for review)'],
+        'developer true, no added' => [true, 'no', '  Plugin and theme updates: each one reported for review (was: approved automatically)'],
+    ];
+    foreach ($cases as $label => [$dev, $added, $want]) {
+        $mail = new MailBox();
+        [, , $dir] = packagedSite();
+        $settings = (string)file_get_contents($dir . '/settings.txt');
+        assertContains($line, $settings, 'the shipped line');
+        file_put_contents($dir . '/settings.txt', str_replace($line, '', $settings));
+        if ($dev !== null) {
+            $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+            file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['auto_accept_unverified_updates' => $dev]));
+        }
+        runPackaged($dir, $mail); // setup: the stored settings have no update policy
+        assertSame(null, (new Sentinel\State($dir . '/state'))->readJson(Config::LAST_GOOD_SETTINGS)['approve_updates'] ?? null, $label);
+        file_put_contents($dir . '/settings.txt', (string)file_get_contents($dir . '/settings.txt') . "approve_plugin_updates_automatically = $added\n");
+        runPackaged($dir, $mail);
+        $notices = array_values(array_filter($mail->sent, function ($m) {
+            return strpos($m['subject'], 'settings changed') !== false;
+        }));
+        assertSame(1, count($notices), $label);
+        assertContains($want, $notices[0]['body'], $label);
+        assertNotContains('only comments or formatting changed', $notices[0]['body'], $label);
+    }
+
+    // The line removed again: the developer default applies, and the notice says so.
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/settings.txt', str_replace($line, '', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    $notices = array_values(array_filter($mail->sent, function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    }));
+    assertSame(1, count($notices));
+    assertContains('  Plugin and theme updates: each one reported for review (was: approved automatically)', $notices[0]['body']);
+});

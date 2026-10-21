@@ -418,7 +418,8 @@ final class Run
                     return $v ? implode(', ', (array)$v) : '(nobody)';
                 }
                 if ($k === 'approve_updates') {
-                    return self::policy($v === null ? $config->autoAcceptUnverifiedUpdates : (bool)$v);
+                    // No line (then or now) is the developer's default, whatever the new settings.txt says.
+                    return self::policy($v === null ? $config->autoAcceptDefault : (bool)$v);
                 }
                 if ($k === 'changed_files') {
                     return $v === 'quiet' ? 'quiet' : 'tell me'; // absent (an install from before the setting) is the default, whatever the new config says
