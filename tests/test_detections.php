@@ -151,16 +151,21 @@ t('Detections: another plugin with a detection does not hold back a genuine upda
     assertNotContains('wp-content/plugins/other', implode("\n", array_column(array_slice($n->sent, $before), 'body')));
 });
 
-t('Detections: a detection outside plugins and themes is not remembered; state from before (no file, or a damaged one) keeps working', function () {
-    [$root, , $state, $m] = laundering();
+t('Detections: a detection outside plugins and themes is remembered too; state from before (no file, or a damaged one) keeps working', function () {
+    [$root, $config, $state, $m] = laundering();
     assertTrue(!is_file($state->path(Detections::FILE)), 'state from before has no detections file');
     assertSame(0, $m->run('check')['exit']);
     launderWrite($root, ['wp-content/uploads/x.php' => '<?php echo 1;']);
     assertSame(1, $m->run('check')['exit']);
-    assertSame([], (new Detections($state))->all(), 'PHP in uploads is reported, not remembered');
+    assertSame(['wp-content/uploads/x.php'], array_keys((new Detections($state))->all()), 'PHP in uploads is reported and remembered');
     unlink($root . '/wp-content/uploads/x.php');
     clearstatcache();
-    assertSame(0, $m->run('check')['exit'], 'and cleaning it up is enough');
+    $r = $m->run('check');
+    assertSame(1, $r['exit'], 'cleaning it up is not a review');
+    assertContains('wp-content/uploads/x.php detection-unresolved', implode("\n", $r['lines']));
+    Accept::run($config, $state, ['wp-content/uploads/x.php'], false, []);
+    assertSame([], (new Detections($state))->all(), 'accepting the removed path resolves it');
+    assertSame(0, $m->run('check')['exit']);
 
     file_put_contents($state->path(Detections::FILE), json_encode(['a.php' => 'junk', 'b.php' => ['sha256' => 'x']]));
     assertSame([], (new Detections($state))->all(), 'damaged entries are ignored');
@@ -188,7 +193,7 @@ t('Detections: files flagged at setup are remembered like any detection', functi
     [, , $dir] = packagedSite(['wp-content/plugins/evil/evil.php' => launderHeader('1.0', LAUNDER_PAYLOAD), 'wp-content/uploads/x.php' => '<?php echo 1;']);
     assertSame(1, runPackaged($dir, new MailBox())['exit']);
     $d = json_decode((string)file_get_contents($dir . '/state/' . Detections::FILE), true);
-    assertSame(['wp-content/plugins/evil/evil.php'], array_keys($d));
+    assertSame(['wp-content/plugins/evil/evil.php', 'wp-content/uploads/x.php'], array_keys($d), 'in a plugin or not');
     assertSame(['request-callable'], $d['wp-content/plugins/evil/evil.php']['rules']);
 });
 
@@ -299,4 +304,43 @@ t('Detections: Critical, then only a Warning rule, then nothing: stays Critical 
     $r = $m->run('check');
     assertContains("  CRITICAL $file detection-unresolved", implode("\n", $r['lines']));
     assertSame($heard + 1, count($critOnly->sent), 'daily reminder');
+});
+
+t('Detections: on a quiet site, a detected file outside plugins and themes rewritten clean is not accepted quietly', function () {
+    [$root, , $state, $m, $n] = monitorFixture(
+        ['wp-config.php' => '<?php', 'lib/ok.php' => '<?php // ok'],
+        ['profile' => 'wordpress', 'wp_checksums' => false, 'quiet_changes' => true]
+    );
+    putFile($root, 'lib/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(1, count($n->sent), 'the detection is emailed');
+
+    bump($root, 'lib/evil.php', '<?php // rewritten so that no rule matches');
+    $r = $m->run('check');
+    assertSame(1, $r['exit'], implode("\n", $r['lines']));
+    assertContains('lib/evil.php detection-unresolved', implode("\n", $r['lines']));
+    assertSame(2, count($n->sent), 'the rewrite is emailed too');
+    assertNotContains('accepted: quiet', (string)$n->sent[1]['attachment']['content']);
+    assertNotContains('lib/evil.php', (string)file_get_contents($state->path('baseline.txt')), 'not accepted into the baseline');
+    assertSame([], $state->readJson('quiet-log.json')['entries'] ?? [], 'nothing was accepted quietly');
+    assertSame(['lib/evil.php'], array_keys((new Detections($state))->all()), 'remembered until reviewed');
+
+    // Another file of the same folder is not quiet either while the detection is unresolved.
+    bump($root, 'lib/ok.php', '<?php // ok, edited');
+    $r = $m->run('check');
+    assertContains('unexplained-change', implode("\n", $r['lines']));
+});
+
+t('Detections: on a quiet site, a root file flagged at setup and rewritten clean is not accepted quietly', function () {
+    $mail = new MailBox();
+    [, $www, $dir] = packagedSite(['evil.php' => '<?php // SENTINEL-TEST-MALWARE-MARKER'], "email = owner@client.example\nchanged_files = quiet");
+    assertSame(1, runPackaged($dir, $mail)['exit'], 'setup flags it');
+    file_put_contents($www . '/evil.php', '<?php // rewritten so that no rule matches');
+    touch($www . '/evil.php', time() - 600);
+    clearstatcache();
+    $r = runPackaged($dir, $mail);
+    assertSame(1, $r['exit'], $r['text']);
+    assertContains('evil.php detection-unresolved', $r['text']);
+    assertNotContains('evil.php', (string)file_get_contents($dir . '/state/baseline.txt'), 'not accepted into the baseline');
+    assertSame(['evil.php'], array_keys((new Sentinel\State($dir . '/state'))->readJson(Detections::FILE)), 'remembered until reviewed');
 });

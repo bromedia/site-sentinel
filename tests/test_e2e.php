@@ -112,15 +112,16 @@ t('end to end: a WordPress site with the tool installed inside the web root', fu
     assertSame(1, $r['exit']);
     assertContains('test-marker', (string)file_get_contents($alerts));
 
-    // Cleaning up returns the site to clean, except that a detection in a plugin is remembered
-    // until someone confirms it was dealt with: removing the file is not a review.
+    // Cleaning up does not return the site to clean on its own: a detection, wherever it was, is
+    // remembered until someone confirms it was dealt with. Removing the file is not a review.
     unlink($site . '/wp-content/uploads/2026/x.php');
     unlink($site . '/wp-content/plugins/foo/evil.php');
     $r = sentinel($dist, array_merge(['check'], $cfg));
     assertSame(1, $r['exit'], $r['out'] . $r['err']);
     assertContains('wp-content/plugins/foo/evil.php detection-unresolved', $r['out']);
-    assertNotContains('uploads/2026/x.php', $r['out'], 'outside plugins and themes, cleaning up is enough');
+    assertContains('wp-content/uploads/2026/x.php detection-unresolved', $r['out'], 'outside plugins and themes too');
     assertSame(0, sentinel($dist, array_merge(['accept', '--path=wp-content/plugins/foo/evil.php'], $cfg))['exit']);
+    assertSame(0, sentinel($dist, array_merge(['accept', '--path=wp-content/uploads/2026/x.php'], $cfg))['exit']);
     assertSame(0, sentinel($dist, array_merge(['check'], $cfg))['exit']);
 
     // A version bump that nothing official vouches for is a Warning until the owner accepts that plugin.

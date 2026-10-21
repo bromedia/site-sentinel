@@ -137,9 +137,7 @@ final class Monitor
         // Detections are remembered until reviewed. One reported earlier whose file changed or
         // disappeared outside this slice is said again here, keyed on what is there now.
         foreach ($a['detected'] as $path => $det) {
-            if (Detections::tracked($this->config, (string)$path)) {
-                $detections->record((string)$path, (string)$det['sha256'], (array)$det['rules'], (int)$det['severity'], $now);
-            }
+            $detections->record((string)$path, (string)$det['sha256'], (array)$det['rules'], (int)$det['severity'], $now);
         }
         foreach (array_keys($a['resolved']) as $path) {
             $detections->resolve((string)$path);

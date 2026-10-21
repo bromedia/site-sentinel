@@ -4,12 +4,15 @@ declare(strict_types=1);
 namespace Sentinel;
 
 /**
- * Files reported as possible hacking whose report nobody has resolved yet. While a plugin or theme
- * has one, a version change does not explain its changes and its version is not recorded:
- * otherwise replacing the detected code with code no pattern catches and raising the version would
- * pass as an update. A detection is resolved by review (accept --path, or dismissing every rule on
- * that exact content) or by the file verifying against the official WordPress.org copy. Removing or
- * editing the file does not resolve it: anyone who can write the site's files can do that.
+ * Files reported as possible hacking whose report nobody has resolved yet, wherever they are.
+ * Until it is resolved, a change to the file is not judged on its own (it may be the detected code
+ * rewritten so that nothing matches), and nothing in its plugin or theme, or its top folder, is
+ * accepted quietly. In a plugin or theme, a version change does not explain its changes and its
+ * version is not recorded either: otherwise replacing the detected code with code no pattern
+ * catches and raising the version would pass as an update. A detection is resolved by review
+ * (accept --path, or dismissing every rule on that exact content) or by the file verifying against
+ * the official WordPress.org copy. Removing or editing the file does not resolve it: anyone who can
+ * write the site's files can do that.
  */
 final class Detections
 {
@@ -54,21 +57,6 @@ final class Detections
         $this->changed = true;
     }
 
-    /**
-     * Only files of a plugin or theme whose version is tracked are remembered: a version change
-     * explains nothing anywhere else, so a detection there needs no memory beyond its own alert.
-     */
-    public static function tracked(Config $config, string $path): bool
-    {
-        $group = Analyzer::groupOf($path, $config->nestedWordPress);
-        foreach ($config->wordpressInstalls() as $prefix) {
-            if (preg_match('#^' . preg_quote($prefix === '' ? '' : $prefix . '/', '#') . 'wp-content/(?:plugins|themes)/[^/]+$#', $group)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     public function resolve(string $path): void
     {
         if (isset($this->entries[$path])) {
@@ -92,7 +80,7 @@ final class Detections
         return true;
     }
 
-    /** @return array<string,bool> plugins and themes (Analyzer::groupOf) with an unresolved detection */
+    /** @return array<string,bool> groups (Analyzer::groupOf: a plugin or theme, else the top folder) with an unresolved detection */
     public function groups(array $nested): array
     {
         $out = [];

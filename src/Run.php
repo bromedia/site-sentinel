@@ -196,7 +196,7 @@ final class Run
             // not make it go quiet before someone has reviewed it.
             $detections = new Detections($state);
             foreach ($scan['findings'] as $f) {
-                if (Detections::tracked($config, $f->path) && !in_array($f->rule, Digest::MONITORING, true)) {
+                if (!in_array($f->rule, Digest::MONITORING, true)) {
                     $earlier = $detections->all()[$f->path] ?? [];
                     $rules = array_values(array_merge((array)($earlier['rules'] ?? []), [$f->rule]));
                     $detections->record($f->path, $f->hash, $rules, max((int)($earlier['severity'] ?? 0), $f->severity), $now);
