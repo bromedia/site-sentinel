@@ -266,3 +266,26 @@ t('Alerter hands the attachment to every channel it sends to', function () {
     (new Alerter([new Channel($a, Finding::WARNING)]))->send('s', 'b', Finding::WARNING);
     assertSame(null, $a->sent[1]['attachment']);
 });
+
+t('EmailNotifier sends the attached-wording body only with the attachment; other channels never use it', function () {
+    $att = sampleAttachment() + ['body' => "the alert body\nIt is attached."];
+    $mail = new MailBox();
+    (new EmailNotifier(['a@example.com'], 'from@example.com', $mail->mailer()))->send('S', 'the alert body', Finding::WARNING, $att);
+    assertContains("the alert body\nIt is attached.\r\n", $mail->sent[0]['body'], 'the multipart body says it is attached');
+
+    $calls = [];
+    $mailer = function (string $to, string $subject, string $body, string $headers) use (&$calls): bool {
+        $calls[] = $body;
+        return strpos($headers, 'multipart') === false;
+    };
+    (new EmailNotifier(['a@example.com'], 'from@example.com', $mailer))->send('S', 'the alert body', Finding::WARNING, $att);
+    assertNotContains('It is attached.', $calls[1], 'refused with the file: the plain retry does not claim it');
+
+    $f = tmpdir() . '/alerts.log';
+    (new FileNotifier($f))->send('S', 'file body', Finding::WARNING, $att);
+    assertNotContains('It is attached.', (string)file_get_contents($f));
+    $http = new FakeHttp();
+    $http->route('https://ntfy.example/topic', 200, 'ok');
+    (new NtfyNotifier('https://ntfy.example/topic', $http))->send('S', 'the body', Finding::WARNING, $att);
+    assertNotContains('It is attached.', $http->calls[0][2]);
+});

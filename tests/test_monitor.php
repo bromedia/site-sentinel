@@ -496,3 +496,63 @@ t('Digest: the report note goes above the developer section of a client email an
     $plain = explode("\n", $client['body']);
     assertSame(count($plain) + 1, count(explode("\n", Sentinel\Digest::withReportNote($client['body'], 'x', true))), 'without a footer: one line, above the "--"');
 });
+
+t('Digest: a client alert says the report is attached only when it is, in the owner part above the footer', function () {
+    $f = [new Finding(Finding::CRITICAL, 'wp-content/uploads/x.php', 'php-in-uploads', 'PHP file in uploads')];
+    $name = 'sentinel-report-shop-20261021-1430.txt';
+    $sentence = "Every finding and changed file is listed in the attached report ($name).";
+    $contact = 'Bro Media (info@bromedia.co.za)';
+    $with = Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], $contact, $name)['body'];
+    $lines = explode("\n", $with);
+    $dash = array_search('--', $lines, true);
+    assertSame('Questions about this email? Contact Bro Media (info@bromedia.co.za).', $lines[$dash - 1], 'the footer stays the last owner line');
+    assertSame('', $lines[$dash - 2]);
+    assertSame($sentence, $lines[$dash - 3], 'the sentence sits above the footer');
+    assertNotContains('attached', Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], $contact)['body'], 'no attachment, no sentence');
+    $lines = explode("\n", Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], '', $name)['body']);
+    assertSame($sentence, $lines[array_search('--', $lines, true) - 1], 'without a footer: directly above the developer section');
+    $tech = Sentinel\Digest::forConfig(makeConfig(tmpdir()), 1760000000, $f, [], [], $name)['body'];
+    assertNotContains('attached report', $tech, 'the technical digest keeps its own wording');
+});
+
+t('Digest: the client changes section counts files per group, and each owner list stops at 10', function () {
+    $group = new Finding(Finding::WARNING, 'wp-content/themes/Avada', 'unexplained-change', '30 file(s) changed without a version change (each one is listed in the report)');
+    $group->files = 30;
+    $one = new Finding(Finding::WARNING, 'wp-content/themes/Lite', 'unverified-update', 'Version 1 -> 2, but 1 changed file(s) could not be verified');
+    $one->files = 1;
+    $body = Sentinel\Digest::forClient('Shop', 1760000000, [$group, $one], [], [], '')['body'];
+    assertContains("  - 30 files changed in wp-content/themes/Avada\n", $body);
+    assertContains("  - 1 file changed in wp-content/themes/Lite\n", $body);
+
+    foreach (['hack' => ['php-in-uploads', Finding::CRITICAL, 'POSSIBLE HACK'], 'check' => ['unexpected-file', Finding::WARNING, 'UNUSUAL FILES'],
+        'unresolved' => ['detection-unresolved', Finding::CRITICAL, 'EARLIER ALERT NOT RESOLVED'], 'changes' => ['sensitive-file-changed', Finding::WARNING, 'WEBSITE FILES CHANGED']] as $section => [$rule, $sev, $title]) {
+        $fs = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $fs[] = new Finding($sev, sprintf('wp-content/uploads/f%02d.php', $i), $rule, 'm');
+        }
+        foreach (['sentinel-report-shop-20261021-1430.txt' => 'all are in the attached report', '' => 'all are in the full report'] as $attached => $where) {
+            $body = Sentinel\Digest::forClient('Shop', 1760000000, $fs, [], [], '', $attached)['body'];
+            $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+            $part = substr($owner, (int)strpos($owner, $title));
+            for ($i = 1; $i <= 10; $i++) {
+                assertContains(sprintf("  - wp-content/uploads/f%02d.php\n", $i), $part, "$section: the first 10");
+            }
+            assertNotContains('f11.php', $owner, "$section: not the 11th");
+            assertNotContains('f12.php', $owner, "$section: not the 12th");
+            assertContains("  and 2 more; $where\n", $part, "$section ($where)");
+            assertContains('f12.php', substr($body, (int)strpos($body, "\n--\n")), "$section: the developer section still names every finding");
+        }
+    }
+});
+
+t('Monitor: a client alert gives email the "attached" wording; other channels keep the plain body', function () {
+    [$root, , , $m, $n] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a'], ['audience' => 'client', 'contact' => 'Bro Media (info@bromedia.co.za)']);
+    bump($root, 'a.php', '<?php // a edited');
+    assertSame(1, $m->run('check')['exit']);
+    $att = $n->sent[0]['attachment'];
+    assertTrue($att !== null, 'attached');
+    $sentence = 'Every finding and changed file is listed in the attached report (' . $att['name'] . ').';
+    assertNotContains('attached report', $n->sent[0]['body'], 'the body every channel gets does not claim an attachment');
+    assertContains($sentence, (string)($att['body'] ?? ''), 'the body for a channel that attaches the file says so');
+    assertSame(str_replace($sentence . "\n\n", '', (string)$att['body']), $n->sent[0]['body'], 'otherwise the same email');
+});

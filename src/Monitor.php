@@ -260,6 +260,11 @@ final class Monitor
                 // An alert without its report beats no alert: say why, and send it anyway.
                 $digest['body'] = Digest::withReportNote($digest['body'], 'The full report could not be saved: ' . $this->plainReason($e), $this->config->audience === 'client');
             }
+            if ($attachment !== null && $this->config->audience === 'client') {
+                // Only the email that really carries the file tells the owner it is attached; every
+                // other channel, and an email sent without the file after all, uses the plain body.
+                $attachment['body'] = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes'], $attachment['name'])['body'];
+            }
             $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top'], $attachment);
             foreach ($r['results'] as $line) {
                 $alertLines[] = 'alert ' . $line;

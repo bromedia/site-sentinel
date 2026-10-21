@@ -6,6 +6,8 @@ namespace Sentinel;
 final class Digest
 {
     private const FOOTER = 'Questions about this email? Contact ';
+    /** Paths shown per section of a client email; the rest are counted and left to the report. */
+    public const LIST_MAX = 10;
 
     private const COMPROMISE = 'Treat this as a possible compromise: keep a copy of the file for analysis, remove or restore it, then check recent logins, plugin/theme vulnerabilities and file permissions. Restore from a clean backup if it is confirmed.';
 
@@ -107,24 +109,29 @@ final class Digest
         'core-file-removed', 'symlink', 'world-writable',
     ];
 
-    /** The digest the config asks for: technical (commands) or client (plain language). */
-    public static function forConfig(Config $c, int $ts, array $findings, array $info, array $notes): array
+    /**
+     * The digest the config asks for: technical (commands) or client (plain language).
+     * $attached is the report's file name when this body goes out with it attached (client only).
+     */
+    public static function forConfig(Config $c, int $ts, array $findings, array $info, array $notes, string $attached = ''): array
     {
         return $c->audience === 'client'
-            ? self::forClient($c->siteName, $ts, $findings, $info, $notes, $c->contact)
+            ? self::forClient($c->siteName, $ts, $findings, $info, $notes, $c->contact, $attached)
             : self::build($c->siteName, (string)gethostname(), $ts, $findings, $info, $notes);
     }
 
     /**
      * Plain language for site owners: what happened and who to contact, never a command to run.
      * The technical detail follows at the end, for the developer the email gets forwarded to.
+     * $attached is the report's file name when the email carries it, and '' when it does not
+     * (another channel, or the report could not be attached): only then does the body say so.
      *
      * @param Finding[] $findings
      * @param string[] $info
      * @param string[] $notes
      * @return array{subject: string, body: string, top: int}
      */
-    public static function forClient(string $site, int $ts, array $findings, array $info, array $notes, string $contact): array
+    public static function forClient(string $site, int $ts, array $findings, array $info, array $notes, string $contact, string $attached = ''): array
     {
         $who = self::whom($contact);
         $groups = ['hack' => [], 'unresolved' => [], 'check' => [], 'changes' => [], 'monitoring' => []];
@@ -156,12 +163,12 @@ final class Digest
         }
 
         $lines = ["Site Sentinel: $site", date('j M Y, H:i T', $ts), '']; // the server's local time for owners
-        $paths = function (array $fs): array {
+        $paths = function (array $fs) use ($attached): array {
             $out = [];
             foreach ($fs as $f) {
-                $out['  - ' . $f->path] = true;
+                $out['  - ' . ($f->files > 0 ? self::filesChanged($f->files) . ' in ' . $f->path : $f->path)] = true;
             }
-            return array_keys($out);
+            return self::capped(array_keys($out), $attached);
         };
         if ($groups['hack']) {
             $lines[] = 'POSSIBLE HACK';
@@ -219,7 +226,39 @@ final class Digest
         foreach ($info as $i) {
             $lines[] = '  info: ' . $i;
         }
-        return ['subject' => $subject, 'body' => implode("\n", array_map([Finding::class, 'line'], $lines)), 'top' => $top];
+        $body = implode("\n", array_map([Finding::class, 'line'], $lines));
+        if ($attached !== '') {
+            $body = self::withReportNote($body, self::attachedNote($attached), true);
+        }
+        return ['subject' => $subject, 'body' => $body, 'top' => $top];
+    }
+
+    /** The owner-facing sentence of an email that carries the report. */
+    public static function attachedNote(string $name): string
+    {
+        return "Every finding and changed file is listed in the attached report ($name).";
+    }
+
+    private static function filesChanged(int $n): string
+    {
+        return $n === 1 ? '1 file changed' : number_format($n) . ' files changed';
+    }
+
+    /**
+     * An owner-facing list: at most LIST_MAX lines, then one saying how many more there are and
+     * where ($attached: the report's file name when it is attached to this email, else '').
+     *
+     * @param string[] $lines
+     * @return string[]
+     */
+    public static function capped(array $lines, string $attached): array
+    {
+        if (count($lines) <= self::LIST_MAX) {
+            return $lines;
+        }
+        $more = count($lines) - self::LIST_MAX;
+        $where = $attached !== '' ? 'all are in the attached report' : 'all are in the full report';
+        return array_merge(array_slice($lines, 0, self::LIST_MAX), ["  and $more more; $where"]);
     }
 
     /** The one line that names the contact; the body refers to it as "the contact below". Empty when no contact is set. */

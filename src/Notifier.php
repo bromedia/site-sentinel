@@ -8,7 +8,9 @@ interface Notifier
     public function name(): string;
 
     /**
-     * @param array{name:string, path:string, content:string}|null $attachment the full report (Report::attachment)
+     * @param array{name:string, path:string, content:string, body?:string}|null $attachment the full report
+     *        (Report::attachment); 'body' is the message to send instead of $body when the file really is
+     *        attached (it tells the owner so). A channel that cannot carry the file ignores it.
      * @throws \RuntimeException when the message could not be delivered
      */
     public function send(string $subject, string $body, int $severity, ?array $attachment = null): void;

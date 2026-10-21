@@ -72,7 +72,7 @@ For `doctor`, these mean `0` no local issues detected, `1` configuration warning
 - **Warning:** new or modified code that is not explained by an update, a PHP extension hidden before another one anywhere (`evil.php.jpg`), changes to `wp-config.php`, `.htaccess` or `mu-plugins`, new symlinks, files that became world-writable, removed core files.
 - **Info:** things that were explained and accepted automatically (files verified against official checksums, a repository plugin updated to a published version). Info appears in the next alert that is sent anyway; it never sends one by itself.
 
-Every alert email, and the setup email when setup found flagged files, carries the full plain-text report as an attachment (every finding and every changed file, one line each, cut at 2 MB with a pointer to the server copy); the complete copies, the newest 30, are kept in `sentinel/state/reports/`. If the report cannot be saved or attached, the email says so and goes out anyway.
+Every alert email, and the setup email when setup found flagged files, carries the full plain-text report as an attachment (every finding and every changed file, one line each, cut at 2 MB with a pointer to the server copy), and the email says so; a client email lists at most 10 files per section and counts the rest, which are in the report. The complete copies, the newest 30, are kept in `sentinel/state/reports/`. If the report cannot be saved or attached, the email says so and goes out anyway.
 
 Each problem alerts once, and Critical problems remind you every `remind_hours` (default 24) until fixed or accepted. Held changes stay out of the baseline, so they keep showing in `check` output until you run `accept`.
 

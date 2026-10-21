@@ -216,6 +216,12 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
         }
         assertContains('Website folder: public_html', $mail->sent[$i]['body']);
     };
+    // The owner is told the report is attached, above the footer, only when it is.
+    $attachedSaid = function (string $body, string $name): void {
+        $sentence = "Every finding and changed file is listed in the attached report ($name).";
+        assertContains($sentence, $body, 'the welcome says the report is attached');
+        assertTrue(strpos($body, $sentence) < strpos($body, 'Questions about this email?'), 'above the footer');
+    };
 
     // Delivered at once: the report lists the flagged file.
     [$home, $www, $dir] = packagedSite($flagged);
@@ -228,6 +234,7 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertTrue(is_file($dir . '/state/reports/' . $att['name']), 'a copy is kept on the server');
     $noPaths($mail, 0, $home, $www, $dir);
     assertNotContains('could not be', $mail->sent[0]['body']);
+    $attachedSaid($mail->sent[0]['body'], $att['name']);
     assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'delivered, so nothing is waiting');
 
     // Mail down at setup: the retry carries the same report, from the server copy.
@@ -244,6 +251,7 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertSame(basename((string)$pending['report']), $att['name']);
     assertContains('wp-content/uploads/x.php', $att['content']);
     $noPaths($mail, $welcomeIndex($mail), $home, $www, $dir);
+    $attachedSaid($mail->sent[$welcomeIndex($mail)]['body'], $att['name']);
 
     // The server copy gone before the retry: sent without it, and says so, above the footer.
     [$home, $www, $dir] = packagedSite($flagged);
@@ -258,6 +266,7 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertSame(null, $mail->attachment($i), 'nothing to attach');
     $body = $mail->sent[$i]['body'];
     assertContains('The full report could not be attached.', $body);
+    assertNotContains('attached report', $body, 'nothing attached, so it does not say so');
     $noPaths($mail, $i, $home, $www, $dir);
     assertTrue(strpos($body, 'The full report could not be attached.') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
     assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'and it is not retried again');
@@ -273,6 +282,7 @@ t('run: setup with a flagged file sends the report with the welcome, also on a r
     assertSame(null, $mail->attachment(0));
     $body = $mail->sent[0]['body'];
     assertContains('The full report could not be saved: ', $body);
+    assertNotContains('attached report', $body, 'nothing attached, so it does not say so');
     $noPaths($mail, 0, $home, $www, $dir);
     assertTrue(strpos($body, 'could not be saved') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
 
@@ -743,6 +753,12 @@ t('run: an alert about 30 changed files attaches a report that lists all 30, and
     assertContains('in this email', $att['content']);
     assertNotContains($dir, $att['content'], 'no absolute paths');
     assertNotContains($dir, $mail->sent[$before]['body'], 'no absolute paths');
+    $body = $mail->sent[$before]['body'];
+    $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+    assertContains('  - 30 files changed in wp-content/themes/Avada', $owner, 'the owner sees how many files changed');
+    $sentence = 'Every finding and changed file is listed in the attached report (' . $att['name'] . ').';
+    assertContains($sentence, $owner, 'the owner is told the report is attached');
+    assertTrue(strpos($owner, $sentence) < strpos($owner, CONTACT_FOOTER), 'above the footer');
 });
 
 t('run: the alert still goes out when the report cannot be saved', function () {
@@ -755,6 +771,7 @@ t('run: the alert still goes out when the report cannot be saved', function () {
     assertSame(null, $mail->attachment($before), 'no attachment');
     $body = $mail->sent[$before]['body'];
     assertContains('The full report could not be saved: ', $body);
+    assertNotContains('attached report', $body, 'nothing attached, so it does not say so');
     assertNotContains($dir, $body, 'no absolute paths');
     $note = strpos($body, 'The full report could not be saved');
     assertTrue($note < strpos($body, "\n--\n"), 'the note comes before the developer section');
@@ -1060,6 +1077,8 @@ t('client emails name the contact once: every alert states the owner\'s next act
         }
         $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
         assertTrue(preg_match('/[Ff]orward this email to the contact below/', $owner) === 1, "$label: next action\n$owner");
+        // The attachment is only pointed to; the next action never depends on it.
+        $owner = (string)preg_replace('/^Every finding and changed file is listed in the attached report \(sentinel-report-[a-z0-9-]+\.txt\)\.$/m', '', $owner);
         assertNotContains('attach', $owner, "$label: does not rely on the attachment");
     }
 });
@@ -1115,4 +1134,21 @@ t('client emails name the contact once: with no contact there is no footer and t
     }
     assertSame('', Sentinel\Digest::footer(''));
     assertSame(CONTACT_FOOTER, Sentinel\Digest::footer(DEFAULT_CONTACT));
+});
+
+t('run: a setup email with many flagged files lists 10 of them and points to the attached report for the rest', function () {
+    $files = [];
+    for ($i = 1; $i <= 12; $i++) {
+        $files[sprintf('wp-content/uploads/f%02d.php', $i)] = '<?php eval($_POST["c"]);';
+    }
+    [, , $dir] = packagedSite($files);
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $body = $mail->sent[0]['body'];
+    $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+    assertContains("  - wp-content/uploads/f10.php\n", $owner);
+    assertNotContains('f11.php', $owner);
+    assertContains("  and 2 more; all are in the attached report\n", $owner);
+    $att = $mail->attachment(0);
+    assertContains('wp-content/uploads/f12.php', $att['content'], 'the report lists them all');
 });

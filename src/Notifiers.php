@@ -37,7 +37,7 @@ final class EmailNotifier implements Notifier
             $message = '--' . $boundary . "\r\n"
                 . "Content-Type: text/plain; charset=UTF-8\r\n"
                 . "Content-Transfer-Encoding: 8bit\r\n\r\n"
-                . $body . "\r\n"
+                . (isset($attachment['body']) ? (string)$attachment['body'] : $body) . "\r\n"
                 . '--' . $boundary . "\r\n"
                 . 'Content-Type: text/plain; charset=UTF-8; name="' . $name . "\"\r\n"
                 . "Content-Transfer-Encoding: base64\r\n"

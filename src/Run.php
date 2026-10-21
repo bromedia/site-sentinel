@@ -87,6 +87,9 @@ final class Run
                     throw new \RuntimeException('not a saved report');
                 }
                 $attachment = Report::attachment($file, Report::displayPath($state->dir(), basename($file)));
+                if (isset($w['body_attached'])) {
+                    $attachment['body'] = (string)$w['body_attached'];
+                }
             } catch (\Throwable $e) {
                 // The welcome is also the test that alerts arrive: it goes out anyway, and says so.
                 $body = self::withNote($body, 'The full report could not be attached.');
@@ -204,67 +207,15 @@ final class Run
             @unlink($marker);
 
             $recorded = max(0, $scan['count'] - count($flagged));
-            $body = ["Site Sentinel is now watching $site.", ''];
-            if ($flagged) {
-                $body = [
-                    "Site Sentinel is now watching $site, but the website already contains files that look like",
-                    'hacking tools or tampering:',
-                ];
-                foreach (array_keys($flagged) as $path) {
-                    $body[] = '  - ' . $path;
-                }
-                $body[] = '';
-                $body[] = 'These files were not recorded as normal, so Site Sentinel keeps reporting them until they';
-                $body[] = "have been dealt with. Please forward this email to $who today.";
-                $body[] = 'The rest of the website is being watched from now on.';
-                $body[] = '';
-            }
-            $body = array_merge($body, [
-                'What was set up',
-                '  Website folder: ' . $config->siteFolderLabel(),
-                '  Files recorded: ' . number_format($recorded),
-                '  WordPress: ' . self::wordpressLine($config, $scan, $who),
-            ], $config->hasWordPress() ? ['  Plugin and theme updates: ' . self::policy($config->autoAcceptUnverifiedUpdates)] : [], [
-                '  Alerts go to: ' . implode(', ', self::recipients($config)),
-                '',
-                'What happens now',
-                '  The website is checked each time the scheduled job runs, with a deeper scan once a day.',
-                "  You will only hear from Site Sentinel when something needs attention.",
-                '',
-                "If you ever receive an alert, forward it to $who.",
-                '',
-                'This email is also the test that alerts reach you: if it landed in spam, mark it as not spam.',
-            ]);
-            $developer = [];
-            if ($flagged) {
-                $developer[] = '--';
-                $developer[] = 'Technical details for your web developer:';
-                foreach ($scan['findings'] as $f) {
-                    $developer[] = '  ' . Finding::label($f->severity) . ' ' . $f->rule . ' ' . $f->path . ': ' . $f->message . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
-                }
-                $developer[] = '  These files are not in the baseline and are reported again on later runs. Clean or';
-                $developer[] = '  remove a file, or if it is harmless, dismiss it by its id; then accept --path=<file>.';
-            }
             $notes = array_merge($scan['notes'], array_map(function ($l) {
                 return sprintf("'%s' is a symlink to a directory (%s) and is not monitored.", $l[0], $l[1]);
             }, $scan['symlinkDirs']));
             if ($config->heartbeatUrl === '') {
                 $notes[] = 'Optional: no heartbeat is set. A "heartbeat =" line in settings.txt lets an outside service (for example healthchecks.io) warn you if Sentinel ever stops running; nothing on this server can notice that.';
             }
-            if ($notes) {
-                if ($developer) {
-                    $developer[] = '';
-                }
-                $developer[] = '--';
-                $developer[] = 'Notes for your web developer:';
-                foreach ($notes as $n) {
-                    $developer[] = '  - ' . $n;
-                }
-            }
-            $body = self::withFooter($body, $config->contact, $developer);
             // Kept until it has gone out, and retried on later runs; the setup itself is not redone.
             $subject = $flagged ? "Security alert: Site Sentinel is now protecting $site and found possible hacking" : "Site Sentinel is now protecting $site";
-            $pending = ['subject' => $subject, 'body' => self::text($body)];
+            $pending = ['subject' => $subject, 'body' => self::welcomeBody($config, $scan, array_keys($flagged), $recorded, $who, $notes, '')];
             if ($flagged) {
                 // The full record of what was found goes with the email, and stays on the server.
                 try {
@@ -279,6 +230,8 @@ final class Run
                         [],
                         $notes
                     );
+                    // Sent instead of 'body' by a try that really attaches the report: it says so.
+                    $pending['body_attached'] = self::welcomeBody($config, $scan, array_keys($flagged), $recorded, $who, $notes, basename($pending['report']));
                 } catch (\Throwable $e) {
                     // Setup and the welcome do not depend on the report.
                     $pending['body'] = self::withNote($pending['body'], 'The full report could not be saved: ' . self::plainReason($config, $state, $e));
@@ -298,6 +251,74 @@ final class Run
         } finally {
             $lock->release();
         }
+    }
+
+    /**
+     * The welcome email. $attached is the report's file name when this version goes out with the
+     * report attached (it then says so above the footer), and '' otherwise.
+     *
+     * @param string[] $flagged
+     * @param string[] $notes
+     */
+    private static function welcomeBody(Config $config, array $scan, array $flagged, int $recorded, string $who, array $notes, string $attached): string
+    {
+        $site = $config->siteName;
+        $body = ["Site Sentinel is now watching $site.", ''];
+        if ($flagged) {
+            $body = [
+                "Site Sentinel is now watching $site, but the website already contains files that look like",
+                'hacking tools or tampering:',
+            ];
+            $body = array_merge($body, Digest::capped(array_map(function ($path) {
+                return '  - ' . $path;
+            }, $flagged), $attached));
+            $body[] = '';
+            $body[] = 'These files were not recorded as normal, so Site Sentinel keeps reporting them until they';
+            $body[] = "have been dealt with. Please forward this email to $who today.";
+            $body[] = 'The rest of the website is being watched from now on.';
+            $body[] = '';
+        }
+        $body = array_merge($body, [
+            'What was set up',
+            '  Website folder: ' . $config->siteFolderLabel(),
+            '  Files recorded: ' . number_format($recorded),
+            '  WordPress: ' . self::wordpressLine($config, $scan, $who),
+        ], $config->hasWordPress() ? ['  Plugin and theme updates: ' . self::policy($config->autoAcceptUnverifiedUpdates)] : [], [
+            '  Alerts go to: ' . implode(', ', self::recipients($config)),
+            '',
+            'What happens now',
+            '  The website is checked each time the scheduled job runs, with a deeper scan once a day.',
+            "  You will only hear from Site Sentinel when something needs attention.",
+            '',
+            "If you ever receive an alert, forward it to $who.",
+            '',
+            'This email is also the test that alerts reach you: if it landed in spam, mark it as not spam.',
+        ]);
+        if ($attached !== '') {
+            $body[] = '';
+            $body[] = Digest::attachedNote($attached);
+        }
+        $developer = [];
+        if ($flagged) {
+            $developer[] = '--';
+            $developer[] = 'Technical details for your web developer:';
+            foreach ($scan['findings'] as $f) {
+                $developer[] = '  ' . Finding::label($f->severity) . ' ' . $f->rule . ' ' . $f->path . ': ' . $f->message . (Dismissals::dismissable($f) ? ' [id ' . $f->id() . ']' : '');
+            }
+            $developer[] = '  These files are not in the baseline and are reported again on later runs. Clean or';
+            $developer[] = '  remove a file, or if it is harmless, dismiss it by its id; then accept --path=<file>.';
+        }
+        if ($notes) {
+            if ($developer) {
+                $developer[] = '';
+            }
+            $developer[] = '--';
+            $developer[] = 'Notes for your web developer:';
+            foreach ($notes as $n) {
+                $developer[] = '  - ' . $n;
+            }
+        }
+        return self::text(self::withFooter($body, $config->contact, $developer));
     }
 
     /**

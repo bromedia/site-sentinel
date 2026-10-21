@@ -316,7 +316,7 @@ final class Analyzer
             if ($bumped) {
                 $versionHolds[$g] = true; // the update itself awaits review
             }
-            $findings[] = $bumped
+            $finding = $bumped
                 ? new Finding(
                     Finding::WARNING,
                     $g,
@@ -333,6 +333,8 @@ final class Analyzer
                         . ($suspect ? '; it also has a file reported as possible hacking that has not been reviewed' : ''),
                     $contentKey
                 );
+            $finding->files = count($names); // the owner's email says how many; the report lists them
+            $findings[] = $finding;
             foreach ($names as $n) {
                 $hold[$n] = true;
                 $outcomes[$n] = self::REPORTED;
