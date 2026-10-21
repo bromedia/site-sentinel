@@ -5,11 +5,26 @@ namespace Sentinel;
 
 final class VersionTracker
 {
-    /** @return array<string,string> group directory => version */
+    /**
+     * Plugin and theme versions of every WordPress install; keys of an install in a subfolder start
+     * with its folder (books/wp-content/plugins/x), so those of the website folder are unchanged.
+     *
+     * @return array<string,string> group directory => version
+     */
     public static function read(Config $c): array
     {
         $out = [];
-        foreach (['wp-content/plugins', 'wp-content/themes'] as $dir) {
+        foreach ($c->wordpressInstalls() as $prefix) {
+            $out += self::readInstall($c, $prefix);
+        }
+        return $out;
+    }
+
+    /** @return array<string,string> */
+    private static function readInstall(Config $c, string $prefix): array
+    {
+        $out = [];
+        foreach ([Config::inInstall($prefix, 'wp-content/plugins'), Config::inInstall($prefix, 'wp-content/themes')] as $dir) {
             $names = @scandir($c->abs($dir), SCANDIR_SORT_NONE);
             if ($names === false) {
                 continue;
@@ -31,7 +46,7 @@ final class VersionTracker
     public static function dirVersion(Config $c, string $relDir): ?string
     {
         $f = self::versionFile($c, $relDir);
-        return $f !== null ? self::header($c->abs($f), strpos($relDir, 'wp-content/themes/') !== 0) : null;
+        return $f !== null ? self::header($c->abs($f), !self::isTheme($relDir)) : null;
     }
 
     /** The file whose header gives a plugin's or theme's version (relative path), if any. */
@@ -41,7 +56,7 @@ final class VersionTracker
         if (!is_dir($abs)) {
             return null;
         }
-        if (strpos($relDir, 'wp-content/themes/') === 0) {
+        if (self::isTheme($relDir)) {
             return self::header($abs . '/style.css', false) !== null ? $relDir . '/style.css' : null;
         }
         $names = @scandir($abs, SCANDIR_SORT_NONE);
@@ -55,6 +70,11 @@ final class VersionTracker
             }
         }
         return null;
+    }
+
+    private static function isTheme(string $relDir): bool
+    {
+        return (bool)preg_match('#(?:^|/)wp-content/themes/[^/]+$#', $relDir);
     }
 
     private static function header(string $file, bool $needPluginName): ?string

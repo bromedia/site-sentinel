@@ -21,11 +21,14 @@ final class Proc
         if (!self::available()) {
             return ['exit' => -1, 'out' => '', 'err' => 'proc_open is disabled on this host', 'timed_out' => false];
         }
-        $spec = [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        // stdin is a pipe closed straight away, not /dev/null: hosts that set open_basedir (xneelo's
+        // php-wrapper does) refuse to open /dev/null, and then no command can be started at all.
+        $spec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
         $p = @proc_open($cmd, $spec, $pipes);
         if (!is_resource($p)) {
             return ['exit' => -1, 'out' => '', 'err' => 'cannot start ' . (string)($cmd[0] ?? ''), 'timed_out' => false];
         }
+        fclose($pipes[0]);
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
         $out = '';

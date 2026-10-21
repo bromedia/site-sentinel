@@ -20,14 +20,20 @@ final class Analyzer
         $this->locations = $locations;
         $this->wp = $wp;
         $this->external = $external;
-        $this->sensitive = new PathFilter($config->sensitive);
+        $this->sensitive = new PathFilter($config->sensitivePatterns());
         $this->dismissals = $dismissals;
     }
 
-    public static function groupOf(string $rel): string
+    /** @param string[] $nested WordPress installs in subfolders, whose plugins and themes are grouped the same way */
+    public static function groupOf(string $rel, array $nested = []): string
     {
         if (preg_match('#^(wp-content/(?:plugins|themes)/[^/]+)/#', $rel, $m)) {
             return $m[1];
+        }
+        foreach ($nested as $prefix) {
+            if (strpos($rel, $prefix . '/') === 0 && preg_match('#^(wp-content/(?:plugins|themes)/[^/]+)/#', substr($rel, strlen($prefix) + 1), $m)) {
+                return $prefix . '/' . $m[1];
+            }
         }
         $p = strpos($rel, '/');
         return $p === false ? '.' : substr($rel, 0, $p);
@@ -114,7 +120,7 @@ final class Analyzer
             $fresh = $grace > 0 && $now > 0 && ($now - max((int)$rec['mtime'], (int)($rec['ctime'] ?? 0))) < $grace;
             if ($fresh && !$hits && ($status === WpChecksum::MISMATCH || $status === WpChecksum::EXTRA) && !$c['stealth']) {
                 $hold[$rel] = true;
-                $versionHolds[self::groupOf($rel)] = true; // judged with this update on the next run
+                $versionHolds[self::groupOf($rel, $this->config->nestedWordPress)] = true; // judged with this update on the next run
                 $deferred++;
                 continue;
             }
@@ -155,13 +161,13 @@ final class Analyzer
             }
             if ($fresh) {
                 $hold[$rel] = true;
-                $versionHolds[self::groupOf($rel)] = true;
+                $versionHolds[self::groupOf($rel, $this->config->nestedWordPress)] = true;
                 $deferred++;
                 continue;
             }
             $queue[$rel] = $this->config->abs($rel);
             $queueHashes[$rel] = $hash;
-            $groups[self::groupOf($rel)][$rel] = $hash;
+            $groups[self::groupOf($rel, $this->config->nestedWordPress)][$rel] = $hash;
         }
 
         if ($queue) {
@@ -299,7 +305,7 @@ final class Analyzer
      */
     private function confirmedNotRepositoryPlugin(string $group, string $oldVersion): bool
     {
-        if ($this->wp === null || !preg_match('#^wp-content/plugins/([^/]+)$#', $group, $m)) {
+        if ($this->wp === null || !preg_match('#^(?:.+/)?wp-content/plugins/([^/]+)$#', $group, $m)) {
             return true;
         }
         return $this->wp->releaseStatus($m[1], $oldVersion) === WpChecksum::RELEASE_ABSENT;

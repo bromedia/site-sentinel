@@ -16,7 +16,17 @@ final class Doctor
         };
         $add(0, 'PHP ' . PHP_VERSION . ' (' . PHP_SAPI . '): ' . PHP_BINARY);
         $add(is_readable($c->siteRoot) ? 0 : 2, 'site root: ' . $c->siteRoot);
-        $add(is_dir($c->stateDir) && is_writable($c->stateDir) ? 0 : 2, 'writable state directory: ' . $c->stateDir);
+        if ($c->siteRootFoundHigher) {
+            $add(1, 'site root found one folder further up than sentinel.json says (' . Config::PACKAGE_SITE_ROOT . '): the sentinel folder is inside an extra folder; check that the cron command points at ' . $script);
+        }
+        if (is_dir($c->stateDir)) {
+            $add(is_writable($c->stateDir) ? 0 : 2, 'writable state directory: ' . $c->stateDir);
+        } elseif (is_dir(dirname($c->stateDir)) && is_writable(dirname($c->stateDir))) {
+            // A fresh install: the first run creates it.
+            $add(0, 'state directory does not exist yet; the first run creates it: ' . $c->stateDir);
+        } else {
+            $add(2, 'state directory does not exist and cannot be created (its parent folder is missing or not writable): ' . $c->stateDir);
+        }
         foreach (['script' => $script, 'configuration' => $configFile, 'state directory' => $c->stateDir] as $label => $path) {
             $real = realpath($path);
             $path = $real !== false ? $real : $path;
@@ -24,7 +34,9 @@ final class Doctor
             $add($inside ? 1 : 0, $label . ($inside ? ' is inside the site root; move it outside the public web directory' : ' is outside the site root'));
         }
         $baseline = $c->stateDir . '/baseline.txt';
-        if (!is_readable($baseline)) {
+        if (!is_file($baseline) && Run::setupPending($script, $c->stateDir)) {
+            $add(1, 'not set up yet: ' . Run::MARKER . ' is present, so the next scheduled run sets Sentinel up');
+        } elseif (!is_readable($baseline)) {
             $add(2, 'baseline missing or unreadable; run init before scheduling scans');
         } else {
             try {
@@ -37,6 +49,7 @@ final class Doctor
             }
         }
         $add($c->channels ? 0 : 2, count($c->channels) . ' alert channel(s); run test-alert to verify delivery');
+        $add(0, ExternalScanner::fromConfig($c)->describeClamav());
         $needsHttp = $c->wpChecksums || $c->heartbeatUrl !== '' || $c->rulesUrl !== '';
         foreach ($c->channels as $ch) {
             $needsHttp = $needsHttp || in_array($ch['type'], ['ntfy', 'telegram', 'webhook'], true);
@@ -44,19 +57,24 @@ final class Doctor
                 $add(function_exists('mail') ? 0 : 2, 'email uses PHP mail(), independently of WordPress SMTP plugins');
             }
         }
-        $add($c->heartbeatUrl !== '' ? 0 : 1, $c->heartbeatUrl !== '' ? 'external heartbeat configured (run availability, not proof of a complete scan)' : 'no external heartbeat; you will not be alerted if Sentinel stops running');
+        $add($c->heartbeatUrl !== '' ? 0 : 1, $c->heartbeatUrl !== '' ? 'external heartbeat configured (run availability, not proof of a complete scan)' : 'no external heartbeat (optional, recommended): nothing outside this server would notice if Sentinel stopped running');
         if ($needsHttp) {
             $network = function_exists('curl_init') || (bool)ini_get('allow_url_fopen');
             $add($network ? 0 : 2, $network ? 'HTTP transport available; outbound connectivity has not been tested' : 'HTTP unavailable; enable PHP curl or allow_url_fopen for checksums and remote services');
         }
-        if ($c->profile === 'wordpress') {
+        if ($c->hasWordPress()) {
             $add($c->wpChecksums ? 0 : 1, $c->wpChecksums ? 'WordPress.org checksum verification enabled' : 'WordPress.org checksum verification disabled');
+        }
+        if ($c->profile === 'wordpress') {
             if (!is_file($c->abs('wp-config.php')) && is_file(dirname($c->siteRoot) . '/wp-config.php')) {
                 $add(1, 'wp-config.php is above the site root and is not monitored');
             }
             if ($c->uploadsDir !== '' && is_link($c->abs($c->uploadsDir))) {
                 $add(1, 'uploads directory is a symlink and is not followed; monitor its target with a separate config');
             }
+        }
+        if ($c->nestedWordPress) {
+            $lines[] = 'WordPress in subfolders: ' . implode(', ', $c->nestedWordPress) . '. Each is checked like WordPress in the website folder: its own core checksums and plugin or theme updates, and the WordPress rules for its uploads, wp-config.php and cache folders.';
         }
         $lines[] = 'Watch: ' . implode(', ', $c->watch);
         $lines[] = 'Excluded (not scanned): ' . implode(', ', $c->exclusions());
