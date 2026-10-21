@@ -509,8 +509,11 @@ t('Analyzer outcome: findings on symlinks, unreadable, world-writable and sensit
     $http = new FakeHttp();
     coreRoute($http, ['wp-includes/a.php' => 'A']);
     unlink($root . '/wp-includes/a.php'); // core file removed
-    $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), VersionTracker::read($c));
-    chmod($root . '/lib/locked.php', 0644);
+    try {
+        $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), VersionTracker::read($c));
+    } finally {
+        chmod($root . '/lib/locked.php', 0644);
+    }
     $expected = [
         'lib/locked.php' => 'unreadable',
         'wp-config.php' => 'sensitive-file-changed',

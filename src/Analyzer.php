@@ -267,11 +267,8 @@ final class Analyzer
                 }
                 $findings[] = $f;
                 $hold[$f->path] = true;
-                if (($outcomes[$f->path] ?? '') !== self::REPORTED) {
-                    $outcomes[$f->path] = self::HELD;
-                }
+                $outcomes[$f->path] = self::REPORTED;
                 if (!in_array($f->rule, Digest::MONITORING, true)) { // a check that failed is retried, not remembered
-                    $outcomes[$f->path] = self::REPORTED;
                     $detected[$f->path]['sha256'] = $f->hash;
                     $detected[$f->path]['rules'][] = $f->rule;
                     $detected[$f->path]['severity'] = max((int)($detected[$f->path]['severity'] ?? 0), $f->severity);
