@@ -180,6 +180,7 @@ final class Init
         (new SelfCheck($state, $selfFiles))->record();
         (new AlertLog($state))->clear();
         @unlink($state->path('resume.json'));
+        @unlink($state->path(Detections::FILE));
         $state->writeJson('status.json', []);
         return true;
     }

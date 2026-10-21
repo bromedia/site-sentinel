@@ -28,6 +28,7 @@ return [
     'AlertLog.php',
     'SelfCheck.php',
     'Dismissals.php',
+    'Detections.php',
     'Notifier.php',
     'Notifiers.php',
     'Alerter.php',

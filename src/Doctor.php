@@ -83,6 +83,11 @@ final class Doctor
         $dismissed = is_readable($c->stateDir . '/' . Dismissals::FILE) ? json_decode((string)file_get_contents($c->stateDir . '/' . Dismissals::FILE), true) : [];
         $n = is_array($dismissed) ? count((array)($dismissed['dismissals'] ?? [])) : 0;
         $lines[] = $n > 0 ? $n . ' dismissed finding(s); review them with: php sentinel.php dismiss --list' : 'No dismissed findings.';
+        $detections = is_readable($c->stateDir . '/' . Detections::FILE) ? json_decode((string)file_get_contents($c->stateDir . '/' . Detections::FILE), true) : [];
+        $unresolved = is_array($detections) ? array_keys(array_filter($detections, 'is_array')) : [];
+        if ($unresolved) {
+            $lines[] = 'Reported as possible hacking and not reviewed yet (their plugin or theme is not updated automatically until accept --path): ' . implode(', ', $unresolved);
+        }
         $record = is_readable($c->stateDir . '/selfcheck.json') ? json_decode((string)file_get_contents($c->stateDir . '/selfcheck.json'), true) : [];
         $dfile = $c->stateDir . '/' . Dismissals::FILE;
         if ($n > 0 && (!is_array($record) || (string)@hash_file('sha256', $dfile) !== (string)($record['dismissals'] ?? ''))) {

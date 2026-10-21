@@ -12,8 +12,10 @@ final class Analyzer
     private $external;
     private $sensitive;
     private $dismissals;
+    /** @var array<string,array{sha256:string,rules:string[],severity:int,first:int}> Detections::all() */
+    private $unresolved;
 
-    public function __construct(Config $config, PatternScanner $patterns, LocationScanner $locations, ?WpChecksum $wp, ExternalScanner $external, ?Dismissals $dismissals = null)
+    public function __construct(Config $config, PatternScanner $patterns, LocationScanner $locations, ?WpChecksum $wp, ExternalScanner $external, ?Dismissals $dismissals = null, array $unresolved = [])
     {
         $this->config = $config;
         $this->patterns = $patterns;
@@ -22,6 +24,28 @@ final class Analyzer
         $this->external = $external;
         $this->sensitive = new PathFilter($config->sensitivePatterns());
         $this->dismissals = $dismissals;
+        $this->unresolved = $unresolved;
+    }
+
+    /**
+     * A file reported as possible hacking that changed or disappeared before anyone reviewed the
+     * report. Keyed on what is there now, so each further change alerts again.
+     *
+     * @param array{sha256:string,rules:string[],severity:int,first:int} $entry
+     */
+    public static function unresolvedFinding(string $path, string $currentHash, array $entry, string $since): Finding
+    {
+        return new Finding(
+            (int)($entry['severity'] ?? Finding::CRITICAL),
+            $path,
+            'detection-unresolved',
+            sprintf(
+                'Reported as possible hacking (%s)%s, but not reviewed: until it is, changes to it are not accepted and version changes of its plugin or theme are not approved automatically',
+                implode(', ', $entry['rules']),
+                $since !== '' ? " and $since since" : ''
+            ),
+            $since === 'removed' ? sha1('removed|' . $entry['sha256']) : $currentHash
+        );
     }
 
     /** @param string[] $nested WordPress installs in subfolders, whose plugins and themes are grouped the same way */
@@ -53,7 +77,7 @@ final class Analyzer
      * @param array<string,string> $oldVersions stored plugin/theme versions
      * @param array<string,string> $newVersions versions currently on disk
      * @param int $now current unix time; with update_grace_seconds > 0, update-explainable findings for files that arrived within the grace period are deferred (held, not reported). 0 disables deferral
-     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[]}
+     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[], detected: array<string,array{sha256:string,rules:string[],severity:int}>, resolved: array<string,bool>}
      */
     public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0): array
     {
@@ -66,6 +90,13 @@ final class Analyzer
         $queue = [];
         $queueHashes = [];
         $versionHolds = [];
+        $detected = [];
+        $resolved = [];
+        $pending = [];
+        $unresolvedGroups = [];
+        foreach (array_keys($this->unresolved) as $path) {
+            $unresolvedGroups[self::groupOf((string)$path, $this->config->nestedWordPress)] = true;
+        }
         $dismissed = 0;
         $official = 0;
         $removed = 0;
@@ -113,6 +144,9 @@ final class Analyzer
             $status = ($this->wp !== null && !$this->config->isUploads($rel)) ? $this->wp->verify($rel) : WpChecksum::UNKNOWN;
             if ($status === WpChecksum::VERIFIED) {
                 $official++;
+                if (isset($this->unresolved[$rel])) {
+                    $resolved[$rel] = true; // the official file is back
+                }
                 continue;
             }
             // An update copies many files over a few seconds; a scan that lands mid-copy must not call that tampering.
@@ -137,10 +171,35 @@ final class Analyzer
             // itself is then judged like any other.
             $hits = $this->undismissed($this->pinned($hits, $rel, $hash), $dismissed);
             if ($hits) {
+                // Reported before at a higher severity and not reviewed: the lower hits now do not
+                // lower it (a Critical rewritten until only a Warning rule matches stays Critical).
+                $stored = isset($this->unresolved[$rel]) ? (int)($this->unresolved[$rel]['severity'] ?? Finding::CRITICAL) : Finding::INFO;
+                if ($stored > max(array_map(function (Finding $h) {
+                    return $h->severity;
+                }, $hits))) {
+                    $findings[] = self::unresolvedFinding($rel, $hash, $this->unresolved[$rel], 'changed');
+                }
                 foreach ($hits as $h) {
                     $findings[] = $h;
+                    if (!in_array($h->rule, Digest::MONITORING, true)) { // a check that failed is retried, not remembered
+                        $detected[$rel]['sha256'] = $h->hash;
+                        $detected[$rel]['rules'][] = $h->rule;
+                        $detected[$rel]['severity'] = max((int)($detected[$rel]['severity'] ?? 0), $h->severity);
+                    }
                 }
                 $hold[$rel] = true;
+                continue;
+            }
+            if (isset($this->unresolved[$rel])) {
+                // Reported before and not reviewed since: the change is not judged on its own (it may
+                // be the detected code rewritten so that nothing matches), and stays out of the baseline.
+                // A code file still goes to the external scanners, whose finding then says more.
+                $hold[$rel] = true;
+                $pending[$rel] = $this->pinned([new Finding(Finding::WARNING, $rel, 'detection-unresolved', '', $hash)], $rel, $hash)[0]->hash;
+                if ($this->config->isCodeFile($rel)) {
+                    $queue[$rel] = $this->config->abs($rel);
+                    $queueHashes[$rel] = $hash;
+                }
                 continue;
             }
 
@@ -179,10 +238,26 @@ final class Analyzer
                 }
                 $findings[] = $f;
                 $hold[$f->path] = true;
+                if (!in_array($f->rule, Digest::MONITORING, true)) { // a check that failed is retried, not remembered
+                    $detected[$f->path]['sha256'] = $f->hash;
+                    $detected[$f->path]['rules'][] = $f->rule;
+                    $detected[$f->path]['severity'] = max((int)($detected[$f->path]['severity'] ?? 0), $f->severity);
+                }
+                unset($pending[$f->path]);
                 foreach (array_keys($groups) as $g) {
                     unset($groups[$g][$f->path]);
                 }
             }
+        }
+
+        foreach ($pending as $rel => $content) {
+            $entry = $this->unresolved[$rel];
+            $findings[] = self::unresolvedFinding((string)$rel, $content, $entry, $content === $entry['sha256'] ? '' : 'changed');
+        }
+        // A detection in this run counts too: an update arriving with it is not explained by its
+        // version either, so the files and the recorded version wait for review together.
+        foreach (array_keys($detected) as $rel) {
+            $unresolvedGroups[self::groupOf((string)$rel, $this->config->nestedWordPress)] = true;
         }
 
         foreach ($groups as $g => $files) {
@@ -195,7 +270,10 @@ final class Analyzer
             // Files reach this point only if no official checksum vouched for them, so a version
             // bump alone proves nothing: anyone who can edit the files can edit the Version header.
             $bumped = $old !== null && $new !== null && $old !== $new;
-            if ($bumped && $this->config->autoAcceptUnverifiedUpdates && $this->confirmedNotRepositoryPlugin($g, $old)) {
+            // Nor does it for a plugin with a file reported as possible hacking and not reviewed:
+            // the bump could be covering for that file.
+            $suspect = isset($unresolvedGroups[$g]);
+            if ($bumped && !$suspect && $this->config->autoAcceptUnverifiedUpdates && $this->confirmedNotRepositoryPlugin($g, $old)) {
                 $info[] = sprintf('%s updated %s -> %s (%d file(s), not verified)', $g, $old, $new, count($files));
                 continue;
             }
@@ -211,14 +289,16 @@ final class Analyzer
                     Finding::WARNING,
                     $g,
                     'unverified-update',
-                    sprintf('Version %s -> %s, but %d changed file(s) could not be verified against an official source: %s', $old, $new, count($names), $sample),
+                    sprintf('Version %s -> %s, but %d changed file(s) could not be verified against an official source: %s', $old, $new, count($names), $sample)
+                        . ($suspect ? '; it also has a file reported as possible hacking that has not been reviewed' : ''),
                     sha1($old . '>' . $new . '|' . $contentKey)
                 )
                 : new Finding(
                     Finding::WARNING,
                     $g,
                     'unexplained-change',
-                    sprintf('%d file(s) changed without a version change: %s', count($names), $sample),
+                    sprintf('%d file(s) changed without a version change: %s', count($names), $sample)
+                        . ($suspect ? '; it also has a file reported as possible hacking that has not been reviewed' : ''),
                     $contentKey
                 );
             foreach ($names as $n) {
@@ -233,7 +313,7 @@ final class Analyzer
             $crit = array_values(array_filter($findings, function (Finding $f) {
                 return $f->severity >= Finding::CRITICAL;
             }));
-            return ['findings' => $crit, 'info' => [], 'hold' => [], 'version_holds' => [], 'notes' => $notes];
+            return ['findings' => $crit, 'info' => [], 'hold' => [], 'version_holds' => [], 'notes' => $notes, 'detected' => [], 'resolved' => []];
         }
 
         if ($dismissed > 0) {
@@ -251,7 +331,7 @@ final class Analyzer
         // Only an update that is still waiting (for review, or for its copy to finish) keeps a
         // plugin's or theme's stored version. A file held for its own finding does not: freezing
         // the version then would let later edits pass as part of an update that was already done.
-        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'version_holds' => $versionHolds, 'notes' => $notes];
+        return ['findings' => $findings, 'info' => $info, 'hold' => $hold, 'version_holds' => $versionHolds, 'notes' => $notes, 'detected' => $detected, 'resolved' => $resolved];
     }
 
     /**

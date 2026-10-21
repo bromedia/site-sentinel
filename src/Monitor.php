@@ -97,13 +97,22 @@ final class Monitor
 
         $wpOn = $this->config->hasWordPress();
         $wp = $wpOn && $this->config->wpChecksums ? new WpChecksum($this->http, $this->config, $this->state->path('cache')) : null;
+        $detections = new Detections($this->state);
+        if ($dismissals !== null) {
+            foreach (array_keys($detections->all()) as $path) {
+                if ($detections->dismissed((string)$path, $dismissals)) {
+                    $detections->resolve((string)$path); // reviewed as harmless with "dismiss"
+                }
+            }
+        }
         $analyzer = new Analyzer(
             $this->config,
             new PatternScanner($rules, $this->config->maxScanBytes),
             new LocationScanner($this->config),
             $wp,
             ExternalScanner::fromConfig($this->config),
-            $dismissals
+            $dismissals,
+            $detections->all()
         );
 
         $differ = new Differ($this->config);
@@ -122,6 +131,35 @@ final class Monitor
         }
         $a['notes'] = array_merge($selfNotes, $a['notes']);
 
+        // Detections are remembered until reviewed. One reported earlier whose file changed or
+        // disappeared outside this slice is said again here, keyed on what is there now.
+        foreach ($a['detected'] as $path => $det) {
+            if (Detections::tracked($this->config, (string)$path)) {
+                $detections->record((string)$path, (string)$det['sha256'], (array)$det['rules'], (int)$det['severity'], $now);
+            }
+        }
+        foreach (array_keys($a['resolved']) as $path) {
+            $detections->resolve((string)$path);
+        }
+        foreach ($detections->all() as $path => $entry) {
+            $path = (string)$path;
+            if (isset($a['hold'][$path]) || isset($a['detected'][$path])) {
+                continue;
+            }
+            $abs = $this->config->abs($path);
+            // The official file can be back with nothing looking changed (same size and timestamp
+            // as the baseline), so it would never reach the checksum check of a changed file.
+            if ($wp !== null && file_exists($abs) && !$this->config->isUploads($path) && $wp->verify($path) === WpChecksum::VERIFIED) {
+                $detections->resolve($path);
+                continue;
+            }
+            if (!file_exists($abs)) {
+                $findings[] = Analyzer::unresolvedFinding($path, '', $entry, 'removed');
+            } elseif (($current = (string)@hash_file('sha256', $abs)) !== $entry['sha256']) {
+                $findings[] = Analyzer::unresolvedFinding($path, $current, $entry, 'changed');
+            }
+        }
+
         $updates = [];
         foreach ($d['changes'] as $c) {
             if (isset($a['hold'][$c['path']])) {
@@ -136,6 +174,7 @@ final class Monitor
             if ($updates) {
                 Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
             }
+            $detections->save();
 
             // What holds back a plugin's version, gathered over the whole traversal: a scan that
             // resumes across runs sees a held file in one slice and records versions in the last.

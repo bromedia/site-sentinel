@@ -65,6 +65,14 @@ final class Accept
                 $state->writeJson('versions.json', $store);
             }
         }
+        // Accepting a file is the review that resolves an earlier report of possible hacking on it.
+        $detections = new Detections($state);
+        foreach (array_keys($detections->all()) as $p) {
+            if (!$paths || self::wanted((string)$p, $paths)) {
+                $detections->resolve((string)$p);
+            }
+        }
+        $detections->save();
         @unlink($state->path('resume.json'));
         if (!$paths) {
             (new AlertLog($state))->clear();

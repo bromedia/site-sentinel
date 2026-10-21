@@ -172,6 +172,17 @@ final class Run
             if (!Init::install($config, $state, $scan['tmp'], $selfFiles, $untrusted)) {
                 return ['exit' => 2, 'lines' => ['setup failed: cannot install the baseline in ' . $config->stateDir]];
             }
+            // Remembered like any detection, so rewriting a flagged file until nothing matches does
+            // not make it go quiet before someone has reviewed it.
+            $detections = new Detections($state);
+            foreach ($scan['findings'] as $f) {
+                if (Detections::tracked($config, $f->path) && !in_array($f->rule, Digest::MONITORING, true)) {
+                    $earlier = $detections->all()[$f->path] ?? [];
+                    $rules = array_values(array_merge((array)($earlier['rules'] ?? []), [$f->rule]));
+                    $detections->record($f->path, $f->hash, $rules, max((int)($earlier['severity'] ?? 0), $f->severity), $now);
+                }
+            }
+            $detections->save();
             // The setup scan was a full one, so the next full scan is due in a day, not on the next run.
             $state->writeJson('status.json', ['full' => ['last_run' => $now, 'last_complete' => $now, 'complete' => true, 'changes' => 0, 'critical' => 0, 'warning' => 0]]);
             self::rememberSettings($config, $state);
