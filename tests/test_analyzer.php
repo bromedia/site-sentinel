@@ -7,6 +7,7 @@ use Sentinel\ExternalScanner;
 use Sentinel\Finding;
 use Sentinel\LocationScanner;
 use Sentinel\PatternScanner;
+use Sentinel\Report;
 use Sentinel\Rules;
 use Sentinel\VersionTracker;
 use Sentinel\WpChecksum;
@@ -158,7 +159,8 @@ t('Analyzer: a brand-new plugin directory is a Warning and many files make one f
     $r = runAnalysis($c, $b, null, $old);
     assertSame(['unexplained-change@wp-content/plugins/bar'], ruleList($r));
     assertContains('9 file(s)', $r['findings'][0]->message);
-    assertContains('more', $r['findings'][0]->message);
+    assertContains('each one is listed in the report', $r['findings'][0]->message);
+    assertNotContains('more', $r['findings'][0]->message);
 });
 
 t('Analyzer: official checksum match is accepted silently and beats pattern hits; mismatch and extras are flagged', function () {
@@ -322,4 +324,228 @@ t('Analyzer: a zero grace period or no clock disables deferral', function () {
     [$root2, $c2, $b2] = wpFixture([], ['update_grace_seconds' => 120]);
     putFile($root2, 'lib/a.php', '<?php // a');
     assertSame(['unexplained-change@lib'], ruleList(runAnalysis($c2, $b2, null, [], false, false, 0)));
+});
+
+t('Analyzer reports an outcome for every changed file', function () {
+    [$root, $c, $b] = wpFixture([
+        'wp-includes/ok.php' => 'old',
+        'notes.txt' => 'n',
+        'lib/perm.php' => '<?php // perm',
+        'lib/gone.php' => '<?php // gone',
+    ], ['auto_accept_unverified_updates' => true, 'update_grace_seconds' => 120]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-includes/ok.php', 'official');                    // verified against the official checksum
+    bump($root, 'notes.txt', 'changed');                               // not code
+    chmod($root . '/lib/perm.php', 0600);                              // permissions only
+    unlink($root . '/lib/gone.php');                                   // removed, not sensitive
+    bump($root, 'lib/fresh.php', '<?php // fresh', 1000);              // arrived inside the grace period
+    putFile($root, 'wp-content/themes/t/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER'); // pattern hit
+    bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n"); // approved update
+    bump($root, 'lib/a.php', '<?php // a');                            // unexplained change
+    bump($root, 'lib/b.php', '<?php // b');
+    $http = new FakeHttp();
+    coreRoute($http, ['wp-includes/ok.php' => 'official']);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/', 404, '{"error":"not found"}');
+    $a = analyzerFor($c, new WpChecksum($http, $c, tmpdir()));
+    $changes = array_values(diffByPath($c, $b));
+    $r = $a->analyze($changes, $old, VersionTracker::read($c), false, time() + 600);
+
+    $expected = [
+        'wp-includes/ok.php' => 'accepted: official copy',
+        'notes.txt' => 'accepted: not code',
+        'lib/perm.php' => 'accepted: permissions only',
+        'lib/gone.php' => 'accepted: removed',
+        'lib/fresh.php' => 'held: judged next run',
+        'wp-content/themes/t/evil.php' => 'reported',
+        'wp-content/plugins/foo/foo.php' => 'accepted: approved update',
+        'lib/a.php' => 'reported',
+        'lib/b.php' => 'reported',
+    ];
+    $got = $r['outcomes'];
+    ksort($expected);
+    ksort($got);
+    assertSame($expected, $got);
+    $paths = array_map(function ($ch) { return $ch['path']; }, $changes);
+    sort($paths);
+    assertSame($paths, array_keys($got), 'one outcome per changed path');
+    foreach ($got as $status) {
+        assertTrue(in_array($status, Report::STATUSES, true), $status);
+    }
+    foreach ($r['findings'] as $f) {
+        assertNotContains('more)', $f->message);
+        assertNotContains('lib/a.php', $f->message);
+    }
+    $unexplained = array_values(array_filter($r['findings'], function ($f) { return $f->rule === 'unexplained-change'; }));
+    assertSame('2 file(s) changed without a version change (each one is listed in the report)', $unexplained[0]->message);
+});
+
+t('Analyzer: an unverified update message points to the report instead of sampling files', function () {
+    [$root, $c, $b] = wpFixture();
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
+    $r = runAnalysis($c, $b, null, $old);
+    assertSame('Version 1.0 -> 1.1, but 1 changed file(s) could not be verified against an official source (each one is listed in the report)', $r['findings'][0]->message);
+    assertSame(['wp-content/plugins/foo/foo.php' => 'reported'], $r['outcomes']);
+});
+
+/** Runs the Analyzer over the changes since $b with a scanner built from the given rule list. */
+function analyzeWithRules(Config $c, string $b, array $patternRules, array $extra = [], array $old = [], int $now = 0): array
+{
+    $unresolved = $extra['unresolved'] ?? [];
+    $a = new Analyzer(
+        $c,
+        new PatternScanner(Rules::fromArray(['patterns' => $patternRules]), 1048576),
+        new LocationScanner($c),
+        null,
+        $extra['external'] ?? new ExternalScanner(null, null, null),
+        $extra['dismissals'] ?? null,
+        $unresolved
+    );
+    return $a->analyze(array_values(diffByPath($c, $b)), $old, VersionTracker::read($c), false, $now);
+}
+
+function heavyRule(): array
+{
+    return ['id' => 'heavy', 'severity' => 'critical', 'regex' => '/^(a+)+$/', 'description' => 'heavy rule'];
+}
+
+function markerRule(): array
+{
+    return ['id' => 'marker', 'severity' => 'critical', 'regex' => '/SENTINEL-TEST-MALWARE-MARKER/', 'description' => 'marker'];
+}
+
+/** Runs $fn with PCRE limits so low that heavyRule() fails to run, restoring them afterwards. */
+function withBrokenRegex(callable $fn)
+{
+    $jit = ini_set('pcre.jit', '0');
+    $limit = ini_set('pcre.backtrack_limit', '100');
+    try {
+        return $fn();
+    } finally {
+        ini_set('pcre.jit', (string)$jit);
+        ini_set('pcre.backtrack_limit', (string)$limit);
+    }
+}
+
+t('Analyzer outcome: a rule that failed to run alone is held for the next run; beside a real hit it is reported', function () {
+    [$root, $c, $b] = wpFixture();
+    putFile($root, 'lib/slow.php', str_repeat('a', 40) . '!');
+    $r = withBrokenRegex(function () use ($c, $b) {
+        return analyzeWithRules($c, $b, [heavyRule()]);
+    });
+    assertSame(['scan-error@lib/slow.php'], ruleList($r));
+    assertSame(['lib/slow.php' => Report::STATUSES[6]], $r['outcomes']);
+    assertSame([], $r['detected'], 'a check that failed is retried, not remembered');
+
+    putFile($root, 'lib/slow.php', str_repeat('a', 40) . '! SENTINEL-TEST-MALWARE-MARKER');
+    $r = withBrokenRegex(function () use ($c, $b) {
+        return analyzeWithRules($c, $b, [heavyRule(), markerRule()]);
+    });
+    assertSame(['marker@lib/slow.php', 'scan-error@lib/slow.php'], ruleList($r));
+    assertSame(['lib/slow.php' => Report::STATUSES[0]], $r['outcomes']);
+});
+
+t('Analyzer outcome: a rule that failed to run beside an unreviewed detection that was worse is reported', function () {
+    [$root, $c, $b] = wpFixture();
+    putFile($root, 'lib/slow.php', str_repeat('a', 40) . '!');
+    $unresolved = ['lib/slow.php' => ['sha256' => str_repeat('0', 64), 'rules' => ['marker'], 'severity' => Finding::CRITICAL, 'first' => 1]];
+    $r = withBrokenRegex(function () use ($c, $b, $unresolved) {
+        return analyzeWithRules($c, $b, [heavyRule()], ['unresolved' => $unresolved]);
+    });
+    assertSame(['detection-unresolved@lib/slow.php', 'scan-error@lib/slow.php'], ruleList($r));
+    assertSame(['lib/slow.php' => Report::STATUSES[0]], $r['outcomes']);
+});
+
+t('Analyzer outcome: an external scanner hit is reported, a clean file goes on to the update logic', function () {
+    [$root, $c, $b] = wpFixture();
+    $clam = fakeTool(tmpdir(), 'clamscan', 'rc=0
+for f in "$@"; do
+  case "$f" in -*) continue;; esac
+  if grep -q EICAR "$f"; then echo "$f: Fake.Eicar FOUND"; rc=1; fi
+done
+exit $rc
+');
+    putFile($root, 'lib/bad.php', '<?php // EICAR');
+    putFile($root, 'lib/fine.php', '<?php // fine');
+    $r = analyzeWithRules($c, $b, [], ['external' => new ExternalScanner($clam, null, null)]);
+    assertSame(['clamav:Fake.Eicar@lib/bad.php', 'unexplained-change@lib'], ruleList($r));
+    assertSame(['lib/bad.php' => Report::STATUSES[0], 'lib/fine.php' => Report::STATUSES[0]], $r['outcomes']);
+    assertSame(['lib/bad.php'], array_keys($r['detected']));
+});
+
+t('Analyzer outcome: a dismissed hit does not decide the status, the rest of the logic does', function () {
+    [$root, $c, $b] = wpFixture([], ['update_grace_seconds' => 120]);
+    $content = '<?php // SENTINEL-TEST-MALWARE-MARKER';
+    $st = new Sentinel\State(tmpdir());
+    $st->writeJson(Sentinel\Dismissals::FILE, ['dismissals' => [
+        ['rule' => 'marker', 'path' => 'lib/seen.php', 'sha256' => hash('sha256', $content)],
+        ['rule' => 'marker', 'path' => 'lib/new.php', 'sha256' => hash('sha256', $content)],
+    ]]);
+    $dismissals = new Sentinel\Dismissals($st);
+
+    // Arrived just now: the dismissed hit leaves the file to the grace period.
+    putFile($root, 'lib/seen.php', $content);
+    $r = analyzeWithRules($c, $b, [markerRule()], ['dismissals' => $dismissals], [], time());
+    assertSame([], ruleList($r));
+    assertSame(['lib/seen.php' => Report::STATUSES[6]], $r['outcomes']);
+
+    // Settled: it is an unexplained change like any other file nobody vouches for.
+    $r = analyzeWithRules($c, $b, [markerRule()], ['dismissals' => $dismissals], [], time() + 600);
+    assertSame(['unexplained-change@lib'], ruleList($r));
+    assertSame(['lib/seen.php' => Report::STATUSES[0]], $r['outcomes']);
+    assertContains('reviewed finding(s) not reported again', implode("\n", $r['info']));
+});
+
+t('Analyzer outcome: findings on symlinks, unreadable, world-writable and sensitive files and removals are reported', function () {
+    if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        skip('root can read everything');
+    }
+    [$root, $c, $b] = wpFixture(['wp-includes/a.php' => 'A', 'wp-content/plugins/foo/inc.php' => '<?php // inc']);
+    symlink('/etc', $root . '/wp-content/etc-link');
+    bump($root, 'wp-config.php', '<?php // edited');
+    chmod($root . '/wp-content/plugins/foo/foo.php', 0666);
+    putFile($root, 'lib/locked.php', '<?php');
+    chmod($root . '/lib/locked.php', 0000);
+    $http = new FakeHttp();
+    coreRoute($http, ['wp-includes/a.php' => 'A']);
+    unlink($root . '/wp-includes/a.php'); // core file removed
+    try {
+        $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum($http, $c, tmpdir())), VersionTracker::read($c));
+    } finally {
+        chmod($root . '/lib/locked.php', 0644);
+    }
+    $expected = [
+        'lib/locked.php' => 'unreadable',
+        'wp-config.php' => 'sensitive-file-changed',
+        'wp-content/etc-link' => 'symlink',
+        'wp-content/plugins/foo/foo.php' => 'world-writable',
+        'wp-includes/a.php' => 'core-file-removed',
+    ];
+    $got = [];
+    foreach ($r['findings'] as $f) {
+        $got[$f->path] = $f->rule;
+    }
+    ksort($got);
+    assertSame($expected, $got);
+    $want = array_fill_keys(array_keys($expected), Report::STATUSES[0]);
+    $outcomes = $r['outcomes'];
+    ksort($outcomes);
+    assertSame($want, $outcomes);
+
+    // A sensitive file removed.
+    [$root, $c, $b] = wpFixture();
+    unlink($root . '/wp-config.php');
+    $r = runAnalysis($c, $b, null, VersionTracker::read($c));
+    assertSame(['sensitive-file-removed@wp-config.php'], ruleList($r));
+    assertSame(['wp-config.php' => Report::STATUSES[0]], $r['outcomes']);
+});
+
+t('Analyzer outcome: with auto-accept, a version bump in a plugin with an unreviewed detection is reported, not approved', function () {
+    [$root, $c, $b] = wpFixture([], ['auto_accept_unverified_updates' => true]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
+    $unresolved = ['wp-content/plugins/foo/other.php' => ['sha256' => str_repeat('0', 64), 'rules' => ['marker'], 'severity' => Finding::CRITICAL, 'first' => 1]];
+    $r = analyzeWithRules($c, $b, [], ['unresolved' => $unresolved], $old);
+    assertSame(['unverified-update@wp-content/plugins/foo'], ruleList($r));
+    assertSame(['wp-content/plugins/foo/foo.php' => Report::STATUSES[0]], $r['outcomes']);
 });

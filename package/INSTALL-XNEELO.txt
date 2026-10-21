@@ -61,6 +61,8 @@ IF NO EMAIL ARRIVES WITHIN AN HOUR
 GOOD TO KNOW
    - Checks run every 2 hours, with a deeper scan once a day, so a problem can take up to
      about 2 hours to be noticed.
+   - Alert emails include the full report as an attached text file, listing every file
+     that was found or changed. Copies are kept on the server in sentinel/state/reports/.
    - You can edit settings.txt later, for example to change who receives alerts. Both the
      old and the new addresses are told about the change. If the file has a mistake, Site
      Sentinel keeps using the last settings that worked and emails you about the mistake.

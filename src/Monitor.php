@@ -15,12 +15,14 @@ final class Monitor
     /** @var array<string,string> */
     private $selfFiles;
     private $clock;
+    private $attach;
 
     /**
      * @param Channel[] $channels
      * @param array<string,string> $selfFiles label => path, tracked by SelfCheck
+     * @param callable|null $attach turns a saved report into an attachment (Report::attachment; replaceable in tests)
      */
-    public function __construct(Config $config, State $state, HttpClient $http, array $channels, array $selfFiles, ?callable $clock = null)
+    public function __construct(Config $config, State $state, HttpClient $http, array $channels, array $selfFiles, ?callable $clock = null, ?callable $attach = null)
     {
         $this->config = $config;
         $this->state = $state;
@@ -30,6 +32,7 @@ final class Monitor
         $this->clock = $clock ?? function (): int {
             return time();
         };
+        $this->attach = $attach ?? [Report::class, 'attachment'];
     }
 
     /** @return array{exit:int, lines:string[]} */
@@ -170,6 +173,7 @@ final class Monitor
         // Saving state must not stop this run's findings from being alerted: a full disk
         // is exactly when something may be wrong. The baseline is saved first and the
         // cursor only advances after it, so a failed save means this slice is rescanned.
+        $saveFailed = false;
         try {
             if ($updates) {
                 Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
@@ -218,6 +222,7 @@ final class Monitor
                 $this->state->writeJson('versions.json', $store);
             }
         } catch (\Throwable $e) {
+            $saveFailed = true;
             $findings[] = new Finding(
                 Finding::CRITICAL,
                 'sentinel',
@@ -233,7 +238,54 @@ final class Monitor
         $sent = [];
         if ($due) {
             $digest = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes']);
-            $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
+            // The full record goes with every alert: findings, every changed file and what became of it.
+            $attachment = null;
+            $note = '';
+            $file = null;
+            try {
+                $file = Report::write(
+                    $this->state->path('reports'),
+                    [
+                        'site' => $this->config->siteName,
+                        'root' => $this->config->siteRoot,
+                        'home' => $this->config->accountHome,
+                        'folders' => [$this->sentinelParent()],
+                        'ts' => $now,
+                        'version' => VERSION,
+                        'mode' => $mode,
+                        'complete' => $d['complete'],
+                        'resumed' => $startAfter !== '',
+                        'nested' => $this->config->nestedWordPress,
+                    ],
+                    $findings,
+                    array_map(function (Finding $f): string {
+                        return $f->key();
+                    }, $due),
+                    $d['changes'],
+                    $saveFailed ? self::unsaved($a['outcomes']) : $a['outcomes'],
+                    $a['notes']
+                );
+            } catch (\Throwable $e) {
+                // An alert without its report beats no alert: say why, and send it anyway.
+                $note = 'The full report could not be saved: ' . $this->plainReason($e);
+            }
+            if ($file !== null) {
+                $shown = Report::displayPath($this->state->dir(), basename($file));
+                try {
+                    $attachment = ($this->attach)($file, $shown);
+                } catch (\Throwable $e) {
+                    $note = 'The full report could not be attached; it is saved on the server: ' . $shown;
+                }
+            }
+            if ($note !== '') {
+                $digest['body'] = Digest::withReportNote($digest['body'], $note, $this->config->audience === 'client');
+            }
+            if ($attachment !== null && $this->config->audience === 'client') {
+                // Only the email that really carries the file tells the owner it is attached; every
+                // other channel, and an email sent without the file after all, uses the plain body.
+                $attachment['body'] = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes'], $attachment['name'])['body'];
+            }
+            $r = (new Alerter($this->channels, $this->scrubber()))->send($digest['subject'], $digest['body'], $digest['top'], $attachment);
             foreach ($r['results'] as $line) {
                 $alertLines[] = 'alert ' . $line;
             }
@@ -289,6 +341,36 @@ final class Monitor
         return ['exit' => ($crit + $warn) > 0 ? 1 : 0, 'lines' => $lines];
     }
 
+    /** When the baseline could not be saved nothing was accepted: every "accepted" outcome becomes "pending". */
+    private static function unsaved(array $outcomes): array
+    {
+        foreach ($outcomes as $path => $status) {
+            if (strpos((string)$status, 'accepted: ') === 0) {
+                $outcomes[$path] = Report::UNSAVED;
+            }
+        }
+        return $outcomes;
+    }
+
+    /** The reason an exception gives, without the account's absolute paths. */
+    private function plainReason(\Throwable $e): string
+    {
+        $text = str_replace([$this->state->dir() . '/', $this->state->dir(), rtrim($this->config->siteRoot, '/') . '/', rtrim($this->config->siteRoot, '/')], ['', 'state', '', '.'], $e->getMessage());
+        return trim(Finding::line($text));
+    }
+
+    /** The folder holding the sentinel folder (the account home, unless the folders are laid out differently). */
+    private function sentinelParent(): string
+    {
+        return dirname(dirname($this->state->dir()));
+    }
+
+    /** Nothing sent shows the hosting account's absolute paths (they contain its name). */
+    private function scrubber(): callable
+    {
+        return Report::pathScrubber($this->config->siteRoot, $this->config->accountHome, $this->sentinelParent());
+    }
+
     private function failed(\Throwable $e): array
     {
         return ['exit' => 2, 'lines' => array_merge(['error: ' . $e->getMessage()], $this->reportError($e->getMessage()))];
@@ -310,7 +392,7 @@ final class Monitor
             $sent = [];
             if ($due) {
                 $digest = Digest::forConfig($this->config, $now, $due, [], []);
-                $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
+                $r = (new Alerter($this->channels, $this->scrubber()))->send($digest['subject'], $digest['body'], $digest['top']);
                 foreach ($r['results'] as $line) {
                     $lines[] = 'alert ' . $line;
                 }

@@ -215,21 +215,25 @@ TXT;
         if (is_array($seen) && ($seen['hash'] ?? '') === sha1($message) && time() - (int)($seen['at'] ?? 0) < 86400) {
             return $err;
         }
-        $who = $known !== null && $known->contact !== '' ? $known->contact : 'your web developer';
+        $contact = $known !== null ? $known->contact : '';
+        $who = Digest::whom($contact);
+        $footer = Digest::footer($contact) !== '' ? "\n" . Digest::footer($contact) . "\n" : '';
         $site = $known !== null && $known->website !== '' ? $known->website : 'your website';
         // A website folder that cannot be found usually means the package was extracted inside it.
         $webRoot = $script !== '' && strpos($message, 'site_root') !== false ? self::insideWebRoot(dirname($script)) : '';
         if ($webRoot !== '') {
             $subject = "Site Sentinel setup could not finish on $site";
-            $body = "Site Sentinel was not started.\n\n" . Run::placementMessage($webRoot) . "\n\nIf you need help, contact $who.\n";
+            $body = "Site Sentinel was not started.\n\n" . Run::placementMessage(basename($webRoot)) . "\n\nPlease forward this email to $who.\n" . $footer;
         } else {
             $subject = $known !== null ? "Site Sentinel has stopped monitoring $site" : 'Site Sentinel could not start';
             $body = ($known !== null ? "Site Sentinel has stopped monitoring $site" : 'Site Sentinel could not start')
                 . ", because of a problem with its setup:\n\n  " . Finding::line($message) . "\n\n"
-                . "Until this is fixed the website is not being monitored. Please forward this email to $who.\n";
+                . "Until this is fixed the website is not being monitored. Please forward this email to $who.\n" . $footer;
         }
         try {
-            (new EmailNotifier($to, $known !== null ? $known->from : '', $mailer))->send($subject, $body, Finding::CRITICAL);
+            // Nothing sent shows the hosting account's absolute paths (they contain its name).
+            $scrub = Report::pathScrubber($abs((string)($raw['site_root'] ?? '')), Config::accountHomeFor($dir, (string)($raw['site_root'] ?? '')), dirname($dir));
+            (new EmailNotifier($to, $known !== null ? $known->from : '', $mailer))->send(Alerter::scrubbed($scrub, $subject), Alerter::scrubbed($scrub, $body), Finding::CRITICAL);
             @file_put_contents($seenFile, json_encode(['hash' => sha1($message), 'at' => time()]));
             $err['err'][] = 'the error was emailed to ' . implode(', ', $to);
         } catch (\Throwable $e) {
@@ -263,7 +267,7 @@ TXT;
         }
         $subject = '[Sentinel][TEST] ' . $config->siteName;
         $body = "This is a test alert from Site Sentinel.\nSite: " . $config->siteName . "\nHost: " . gethostname() . "\nTime: " . gmdate('Y-m-d H:i:s') . " UTC\n\nIf you can read this, alerts for this site will reach you.\n";
-        $r = (new Alerter($channels))->send($subject, $body, Finding::CRITICAL);
+        $r = (new Alerter($channels, Report::pathScrubber($config->siteRoot, $config->accountHome, dirname(dirname($config->stateDir)))))->send($subject, $body, Finding::CRITICAL);
         $failed = false;
         foreach ($r['results'] as $line) {
             $failed = $failed || strpos($line, 'FAILED') !== false;

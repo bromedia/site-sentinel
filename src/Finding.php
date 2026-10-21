@@ -14,6 +14,8 @@ final class Finding
     public $rule;
     public $message;
     public $hash;
+    /** For a finding about a plugin, theme or folder: how many changed files it stands for (0 = not such a finding). */
+    public $files = 0;
 
     public function __construct(int $severity, string $path, string $rule, string $message, string $hash = '')
     {

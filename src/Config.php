@@ -64,6 +64,14 @@ final class Config
     private $extraExclude = [];
     /** The packaged site_root was missing, and public_html was found one folder further up. */
     public $siteRootFoundHigher = false;
+    /** site_root as written in sentinel.json (after the one-level-up fallback), before it was resolved; '' when not loaded from a file. */
+    public $siteRootSetting = '';
+    /**
+     * The hosting account's home: the parent of the website folder as configured, before symlinks
+     * are resolved (<sentinel>/../public_html and <sentinel>/../../public_html both give the folder
+     * holding public_html). '' when it cannot be told. Used to keep absolute paths out of what is sent.
+     */
+    public $accountHome = '';
     /** WordPress installs in subfolders (Profile::nestedWordPress), found each time the config is loaded. */
     public $nestedWordPress = [];
     /** @var string[] their uploads folders and anchored sensitive paths; never written back to the config file */
@@ -88,10 +96,12 @@ final class Config
         $dir = dirname($file);
         // The package ships "../public_html". If unzipping added a folder level (for example
         // ~/site-sentinel/sentinel/), the website is exactly one folder further up.
-        $higher = ($raw['site_root'] ?? null) === self::PACKAGE_SITE_ROOT && !is_dir($dir . '/' . self::PACKAGE_SITE_ROOT) && is_dir($dir . '/../' . self::PACKAGE_SITE_ROOT);
+        $configured = (string)($raw['site_root'] ?? '');
+        $higher = self::foundHigher($dir, $raw['site_root'] ?? null);
         if ($higher) {
             $raw['site_root'] = '../' . self::PACKAGE_SITE_ROOT;
         }
+        $setting = (string)($raw['site_root'] ?? '');
         foreach (['site_root', 'state_dir', 'settings_file'] as $key) {
             if (isset($raw[$key]) && is_string($raw[$key]) && $raw[$key] !== '' && $raw[$key][0] !== '/') {
                 $raw[$key] = $dir . '/' . $raw[$key];
@@ -114,9 +124,55 @@ final class Config
         }
         $c = self::fromArray($raw);
         $c->siteRootFoundHigher = $higher;
+        $c->accountHome = self::accountHomeFor($dir, $configured);
+        $c->siteRootSetting = $setting;
         $c->settingsProblem = $problem;
         $c->settings = $settings !== null ? $settings->toArray() : [];
         return $c;
+    }
+
+    /** Whether the shipped site_root is missing here while public_html is one folder further up. */
+    private static function foundHigher(string $dir, $siteRoot): bool
+    {
+        return $siteRoot === self::PACKAGE_SITE_ROOT && !is_dir($dir . '/' . self::PACKAGE_SITE_ROOT) && is_dir($dir . '/../' . self::PACKAGE_SITE_ROOT);
+    }
+
+    /**
+     * The account home for a site_root as written in the config file in $dir (with the one-level-up
+     * fallback applied): the parent of that folder with "." and ".." resolved by name only, so a
+     * website folder that is a link still gives the folder holding the link. '' when unknowable.
+     */
+    public static function accountHomeFor(string $dir, string $siteRoot): string
+    {
+        if (self::foundHigher($dir, $siteRoot)) {
+            $siteRoot = '../' . self::PACKAGE_SITE_ROOT;
+        }
+        return self::parentOf($siteRoot !== '' && $siteRoot[0] !== '/' ? $dir . '/' . $siteRoot : $siteRoot);
+    }
+
+    /** The parent folder of $path by name (relative paths start at the current folder); '' for none or for the file system root. */
+    private static function parentOf(string $path): string
+    {
+        if ($path === '') {
+            return '';
+        }
+        if ($path[0] !== '/') {
+            $cwd = getcwd();
+            if ($cwd === false) {
+                return '';
+            }
+            $path = $cwd . '/' . $path;
+        }
+        $parts = [];
+        foreach (explode('/', $path) as $part) {
+            if ($part === '..') {
+                array_pop($parts);
+            } elseif ($part !== '' && $part !== '.') {
+                $parts[] = $part;
+            }
+        }
+        array_pop($parts); // the website folder itself
+        return $parts ? '/' . implode('/', $parts) : '';
     }
 
     /** The settings kept when they last worked, if the state directory has them. */
@@ -153,6 +209,24 @@ final class Config
         return $raw;
     }
 
+    /**
+     * The website folder as shown to its owner: for the client audience, as configured without
+     * the absolute path (which contains the hosting account name), e.g. "public_html".
+     */
+    public function siteFolderLabel(): string
+    {
+        if ($this->audience !== 'client') {
+            return $this->siteRoot;
+        }
+        $setting = $this->siteRootSetting;
+        if ($setting !== '' && $setting[0] === '/') {
+            $label = basename(rtrim($setting, '/')); // an absolute setting: only its last segment
+        } else {
+            $label = rtrim((string)preg_replace('#^(?:\.{1,2}(?:/+|$))+#', '', $setting), '/');
+        }
+        return $label === '' || $label === '.' || $label === '..' ? basename($this->siteRoot) : $label;
+    }
+
     public static function fromArray(array $raw): Config
     {
         $c = new Config();
@@ -162,6 +236,7 @@ final class Config
             throw new ConfigException('site_root must be an existing directory');
         }
         $c->siteRoot = rtrim($real, '/');
+        $c->accountHome = self::parentOf($root);
         $c->siteName = trim((string)($raw['site_name'] ?? ''));
         if ($c->siteName === '') {
             throw new ConfigException('site_name is required');

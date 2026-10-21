@@ -133,8 +133,15 @@ t('After init a check is clean, and accept makes held changes known-good', funct
     assertSame(1, $after['exit']);
     assertSame(2, count($notifier->sent), 'the remaining set of changes is a new finding');
     $latest = $notifier->sent[1]['body'];
-    assertContains('lib/b.php', $latest);
-    assertNotContains('lib/a.php', $latest);
+    assertContains('1 file(s) changed without a version change', $latest);
+    assertNotContains('2 file(s) changed', $latest);
+    // The files themselves are in the report: b is still waiting, a was accepted.
+    $report = (string)$notifier->sent[1]['attachment']['content'];
+    assertContains('lib/b.php', $report);
+    assertNotContains('lib/a.php', $report);
+    $baseline = (string)file_get_contents($state->path('baseline.txt'));
+    assertContains(hash('sha256', '<?php // a edited'), $baseline, 'a was accepted');
+    assertNotContains(hash('sha256', '<?php // b edited'), $baseline, 'b was not');
 
     $all = Accept::run($config, $state, [], false, $selfFiles);
     assertContains('1 change(s)', implode("\n", $all['lines']));

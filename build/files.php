@@ -33,6 +33,7 @@ return [
     'Notifiers.php',
     'Alerter.php',
     'Digest.php',
+    'Report.php',
     'Monitor.php',
     'RulesUpdater.php',
     'Cron.php',

@@ -205,7 +205,9 @@ t('Monitor: an unverified plugin update alerts once, stays held until accepted, 
     bump($root, 'wp-content/plugins/premium/inc/helper.php', '<?php function helper() {} $f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");');
     assertSame(1, $m->run('check')['exit']);
     assertSame(2, count($n->sent), 'a further change while pending must alert again');
-    assertContains('inc/helper.php', $n->sent[1]['body']);
+    assertContains('2 changed file(s)', $n->sent[1]['body']);
+    assertContains('wp-content/plugins/premium/inc/helper.php', (string)$n->sent[1]['attachment']['content'], 'the files themselves are in the report');
+    assertContains('wp-content/plugins/premium/premium.php', (string)$n->sent[1]['attachment']['content']);
 
     // Reviewed and accepted: quiet afterwards, version advanced.
     $r = Sentinel\Accept::run($config, $state, ['wp-content/plugins/premium'], false, []);
@@ -286,7 +288,8 @@ t('Monitor: with auto-accept, an update arriving with a detection in the same pl
     bump($root, 'wp-content/plugins/foo/inc/helper.php', "<?php // helper, quietly edited\n");
     assertSame(1, $m->run('check')['exit']);
     assertTrue(count($n->sent) > $before);
-    assertContains('inc/helper.php', $n->sent[count($n->sent) - 1]['body']);
+    assertContains('2 changed file(s)', $n->sent[count($n->sent) - 1]['body']);
+    assertContains('wp-content/plugins/foo/inc/helper.php', (string)$n->sent[count($n->sent) - 1]['attachment']['content'], 'the files themselves are in the report');
 
     // Reviewed and accepted: the update is recorded, and the next quiet edit is not part of it.
     assertTrue(isset((new \Sentinel\Detections($state))->all()['wp-content/plugins/foo/evil.php']), 'the detection is remembered until then');
@@ -446,4 +449,218 @@ t('Monitor: a change that just arrived is deferred, then judged on a later run',
     assertSame(1, $r2['exit']);
     assertSame(1, count($n->sent));
     assertContains('unexplained-change', $n->sent[0]['body']);
+});
+
+t('Monitor: a technical alert carries the report, and says so near the top when it cannot be saved', function () {
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a']);
+    bump($root, 'a.php', '<?php // a edited');
+    assertSame(1, $m->run('check')['exit']);
+    $att = $n->sent[0]['attachment'];
+    assertTrue($att !== null, 'attached');
+    assertContains('a.php', $att['content']);
+    assertContains('/reports/' . $att['name'], $att['path'], 'the pointer is a relative path');
+    assertNotContains($root, $att['path']);
+    assertSame(1, count(glob($state->path('reports') . '/sentinel-report-*.txt')));
+
+    [$root2, , $state2, $m2, $n2] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a']);
+    file_put_contents($state2->path('reports'), 'in the way');
+    bump($root2, 'a.php', '<?php // a edited');
+    assertSame(1, $m2->run('check')['exit']);
+    assertSame(null, $n2->sent[0]['attachment']);
+    $lines = explode("\n", $n2->sent[0]['body']);
+    assertContains('The full report could not be saved: ', $lines[4], 'right below the header');
+    assertNotContains($root2, $n2->sent[0]['body']);
+});
+
+t('Digest: the report note goes above the developer section of a client email and below the header of a technical one', function () {
+    $f = [new Sentinel\Finding(Sentinel\Finding::WARNING, 'a.php', 'unexplained-change', 'changed')];
+    $client = Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], '');
+    $body = Sentinel\Digest::withReportNote($client['body'], 'The full report could not be saved: disk full', true);
+    $lines = explode("\n", $body);
+    $at = array_search('--', $lines, true);
+    assertSame('The full report could not be saved: disk full', $lines[$at - 1]);
+    $tech = Sentinel\Digest::build('Shop', 'host', 1760000000, $f, [], []);
+    $lines = explode("\n", Sentinel\Digest::withReportNote($tech['body'], 'The full report could not be saved: disk full', false));
+    assertSame('Highest severity: WARNING', $lines[2]);
+    assertSame('', $lines[3]);
+    assertSame('The full report could not be saved: disk full', $lines[4]);
+
+    // With a contact footer in a client email the note goes above the footer, not between it and the "--".
+    $withFooter = Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], 'Bro Media (info@bromedia.co.za)');
+    $lines = explode("\n", Sentinel\Digest::withReportNote($withFooter['body'], 'The full report could not be saved: disk full', true));
+    $at = array_search('--', $lines, true);
+    assertSame('Questions about this email? Contact Bro Media (info@bromedia.co.za).', $lines[$at - 1]);
+    assertSame('', $lines[$at - 2], 'a blank line above the footer');
+    assertSame('', $lines[$at - 4], 'and one between the body and the note');
+    assertSame('The full report could not be saved: disk full', $lines[$at - 3]);
+    $plain = explode("\n", $client['body']);
+    assertSame(count($plain) + 1, count(explode("\n", Sentinel\Digest::withReportNote($client['body'], 'x', true))), 'without a footer: one line, above the "--"');
+});
+
+t('Digest: a client alert says the report is attached only when it is, in the owner part above the footer', function () {
+    $f = [new Finding(Finding::CRITICAL, 'wp-content/uploads/x.php', 'php-in-uploads', 'PHP file in uploads')];
+    $name = 'sentinel-report-shop-20261021-1430.txt';
+    $sentence = "Every finding and changed file is listed in the attached report ($name).";
+    $contact = 'Bro Media (info@bromedia.co.za)';
+    $with = Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], $contact, $name)['body'];
+    $lines = explode("\n", $with);
+    $dash = array_search('--', $lines, true);
+    assertSame('Questions about this email? Contact Bro Media (info@bromedia.co.za).', $lines[$dash - 1], 'the footer stays the last owner line');
+    assertSame('', $lines[$dash - 2]);
+    assertSame($sentence, $lines[$dash - 3], 'the sentence sits above the footer');
+    assertNotContains('attached', Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], $contact)['body'], 'no attachment, no sentence');
+    $lines = explode("\n", Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], '', $name)['body']);
+    assertSame($sentence, $lines[array_search('--', $lines, true) - 1], 'without a footer: directly above the developer section');
+    $tech = Sentinel\Digest::forConfig(makeConfig(tmpdir()), 1760000000, $f, [], [], $name)['body'];
+    assertNotContains('attached report', $tech, 'the technical digest keeps its own wording');
+});
+
+t('Digest: the client changes section counts files per group, and each owner list stops at 10', function () {
+    $group = new Finding(Finding::WARNING, 'wp-content/themes/Avada', 'unexplained-change', '30 file(s) changed without a version change (each one is listed in the report)');
+    $group->files = 30;
+    $one = new Finding(Finding::WARNING, 'wp-content/themes/Lite', 'unverified-update', 'Version 1 -> 2, but 1 changed file(s) could not be verified');
+    $one->files = 1;
+    $body = Sentinel\Digest::forClient('Shop', 1760000000, [$group, $one], [], [], '')['body'];
+    assertContains("  - 30 files changed in wp-content/themes/Avada\n", $body);
+    assertContains("  - 1 file changed in wp-content/themes/Lite\n", $body);
+    $top = new Finding(Finding::WARNING, '.', 'unexplained-change', '2 file(s) changed');
+    $top->files = 2;
+    assertContains("  - 2 files changed in the main website folder\n", Sentinel\Digest::forClient('Shop', 1760000000, [$top], [], [], '')['body'], 'files at the top level are not shown as "."');
+
+    foreach (['hack' => ['php-in-uploads', Finding::CRITICAL, 'POSSIBLE HACK'], 'check' => ['unexpected-file', Finding::WARNING, 'UNUSUAL FILES'],
+        'unresolved' => ['detection-unresolved', Finding::CRITICAL, 'EARLIER ALERT NOT RESOLVED'], 'changes' => ['sensitive-file-changed', Finding::WARNING, 'WEBSITE FILES CHANGED']] as $section => [$rule, $sev, $title]) {
+        $fs = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $fs[] = new Finding($sev, sprintf('wp-content/uploads/f%02d.php', $i), $rule, 'm');
+        }
+        foreach (['sentinel-report-shop-20261021-1430.txt' => 'all are in the attached report', '' => 'all are in the full report'] as $attached => $where) {
+            $body = Sentinel\Digest::forClient('Shop', 1760000000, $fs, [], [], '', $attached)['body'];
+            $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+            $part = substr($owner, (int)strpos($owner, $title));
+            for ($i = 1; $i <= 10; $i++) {
+                assertContains(sprintf("  - wp-content/uploads/f%02d.php\n", $i), $part, "$section: the first 10");
+            }
+            assertNotContains('f11.php', $owner, "$section: not the 11th");
+            assertNotContains('f12.php', $owner, "$section: not the 12th");
+            assertContains("  and 2 more; $where\n", $part, "$section ($where)");
+            assertContains('f12.php', substr($body, (int)strpos($body, "\n--\n")), "$section: the developer section still names every finding");
+        }
+    }
+});
+
+t('Monitor: a client alert gives email the "attached" wording; other channels keep the plain body', function () {
+    [$root, , , $m, $n] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a'], ['audience' => 'client', 'contact' => 'Bro Media (info@bromedia.co.za)']);
+    bump($root, 'a.php', '<?php // a edited');
+    assertSame(1, $m->run('check')['exit']);
+    $att = $n->sent[0]['attachment'];
+    assertTrue($att !== null, 'attached');
+    $sentence = 'Every finding and changed file is listed in the attached report (' . $att['name'] . ').';
+    assertNotContains('attached report', $n->sent[0]['body'], 'the body every channel gets does not claim an attachment');
+    assertContains($sentence, (string)($att['body'] ?? ''), 'the body for a channel that attaches the file says so');
+    assertSame(str_replace($sentence . "\n\n", '', (string)$att['body']), $n->sent[0]['body'], 'otherwise the same email');
+});
+
+t('Monitor: a report saved but not attachable is said to be on the server, not "could not be saved"', function () {
+    [$root, $config, $state] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a'], ['audience' => 'client']);
+    $n = new FakeNotifier();
+    $unreadable = function (string $file, string $shown): array {
+        throw new RuntimeException('cannot read report'); // as when the saved file cannot be read back
+    };
+    $m = new Monitor($config, $state, new FakeHttp(), [new Channel($n, Finding::WARNING)], [], new FakeClock(), $unreadable);
+    bump($root, 'a.php', '<?php // a edited');
+    assertSame(1, $m->run('check')['exit']);
+    assertSame(null, $n->sent[0]['attachment']);
+    $kept = glob($state->path('reports') . '/sentinel-report-*.txt');
+    assertSame(1, count($kept), 'the report was saved');
+    $body = $n->sent[0]['body'];
+    assertContains('The full report could not be attached; it is saved on the server: ' . \Sentinel\Report::displayPath($state->dir(), basename($kept[0])), $body);
+    assertNotContains('could not be saved', $body);
+    assertNotContains('attached report', $body);
+    assertNotContains($state->dir(), $body, 'the server path is relative');
+});
+
+/**
+ * A site laid out like a hosting account: <home>/public_html, <home>/sentinel/state and the
+ * script at <home>/sentinel/sentinel.php, with a client or technical audience.
+ *
+ * @return array{0:string,1:string,2:\Sentinel\Config,3:State,4:Monitor,5:FakeNotifier,6:string}
+ */
+function accountFixture(string $audience): array
+{
+    $home = tmpdir() . '/home/clientftp';
+    $root = $home . '/public_html';
+    putFile($root, 'index.php', '<?php');
+    $script = putFile($home . '/sentinel', 'sentinel.php', '<?php // v1');
+    $config = \Sentinel\Config::fromArray([
+        'site_name' => 'test',
+        'site_root' => $root,
+        'state_dir' => $home . '/sentinel/state',
+        'profile' => 'generic',
+        'audience' => $audience,
+        'contact' => 'Bro Media (info@bromedia.example)',
+        'update_grace_seconds' => 0,
+        'channels' => [['type' => 'file', 'path' => $home . '/sentinel/state/alerts.log']],
+    ]);
+    $state = new State($config->stateDir);
+    snapshot($config, $state->path('baseline.txt'));
+    $self = ['script' => (string)realpath($script)];
+    (new \Sentinel\SelfCheck($state, $self))->record();
+    $n = new FakeNotifier();
+    $m = new Monitor($config, $state, new FakeHttp(), [new Channel($n, Finding::WARNING)], $self, new FakeClock());
+    return [$home, $root, $config, $state, $m, $n, $script];
+}
+
+t('Monitor: no alert, client or technical, shows the account\'s absolute paths, whatever a finding says', function () {
+    foreach (['client', 'technical'] as $audience) {
+        [$home, $root, , $state, $m, $n, $script] = accountFixture($audience);
+        $f = $state->path('baseline.txt');
+        if (!failNextWrite($f)) {
+            skip('/dev/full or symlinks unavailable');
+        }
+        putFile($root, 'notes.txt', 'new file'); // a change that must be written to the baseline
+        file_put_contents($script, '<?php // v2, changed');
+        assertSame(1, $m->run('check')['exit']);
+        $sent = $n->sent[0];
+        $everything = $sent['subject'] . "\n" . $sent['body'] . "\n" . (string)($sent['attachment']['body'] ?? '') . (string)($sent['attachment']['content'] ?? '');
+        assertContains('self-tamper', $sent['body'], $audience);
+        assertContains('state-write-failed', $sent['body'], $audience);
+        assertContains('sentinel/sentinel.php', $sent['body'], "$audience: the script is shown relative to the home folder");
+        assertContains('sentinel/state/baseline.txt.tmp', $sent['body'], "$audience: so is the state file");
+        foreach ([$home, (string)realpath($home), $root, (string)realpath($root)] as $abs) {
+            assertNotContains($abs, $everything, "$audience: an absolute path was sent");
+        }
+    }
+});
+
+t('Monitor: the error alert for a failed run shows no absolute path either', function () {
+    [$home, , , , $m, $n] = accountFixture('client');
+    $m->reportError('cannot read ' . $home . '/sentinel/state/status.json');
+    assertContains('sentinel/state/status.json', $n->sent[0]['body']);
+    assertNotContains($home, $n->sent[0]['subject'] . $n->sent[0]['body']);
+});
+
+t('Monitor: the report of the final slice of a resumed scan says it covers that part only', function () {
+    [$root, , $state, $m, $n] = monitorFixture(['f1.txt' => '1', 'f2.txt' => '2', 'f3.txt' => '3', 'f4.txt' => '4', 'f5.txt' => '5']);
+    bump($root, 'f1.txt', 'one!'); // a clean change in the first slice: no alert
+    $t = 0.0;
+    $r = $m->run('check', new Budget(1.0, PHP_INT_MAX, function () use (&$t) { $t += 0.6; return $t; }));
+    assertContains('partial scan', $r['lines'][0]);
+    assertSame(0, count($n->sent), 'the first slice finds nothing to alert');
+    assertTrue(isset($state->readJson('resume.json')['check']), 'the scan resumes on the next run');
+
+    putFile($root, 'zz-evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER'); // after the cursor: found in the final slice
+    $r = $m->run('check'); // a full budget: the rest of the scan
+    assertContains('scan complete', $r['lines'][0]);
+    assertSame(1, count($n->sent));
+    $text = (string)$n->sent[0]['attachment']['content'];
+    $final = 'final part of a scan: the scan is now complete; this report covers this part only';
+    assertContains('Coverage: ' . $final, $text);
+    assertContains('CHANGED FILES (1) - ' . $final, $text);
+    assertNotContains('complete scan', $text);
+
+    // A scan that finishes in one run is still a complete scan.
+    [$root2, , , $m2, $n2] = monitorFixture(['f1.txt' => '1']);
+    putFile($root2, 'zz-evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    $m2->run('check');
+    assertContains('Coverage: complete scan', (string)$n2->sent[0]['attachment']['content']);
 });

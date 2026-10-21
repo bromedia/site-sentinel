@@ -10,7 +10,7 @@ use Sentinel\Settings;
 /** Captures mail() calls made through EmailNotifier. */
 final class MailBox
 {
-    /** @var array<int,array{to:string,subject:string,body:string}> */
+    /** @var array<int,array{to:string,subject:string,body:string,headers:string}> */
     public $sent = [];
     /** While true, every send fails the way mail() does when the mail system is down. */
     public $failing = false;
@@ -21,12 +21,34 @@ final class MailBox
             if ($this->failing) {
                 return false;
             }
-            $this->sent[] = ['to' => $to, 'subject' => $subject, 'body' => $body];
+            $this->sent[] = ['to' => $to, 'subject' => $subject, 'body' => $body, 'headers' => $headers];
             return true;
         };
     }
 
-    /** @return array<int,array{to:string,subject:string,body:string}> */
+    /**
+     * The attachment of the $i-th message, decoded from its MIME, or null when it has none.
+     *
+     * @return array{name:string, content:string}|null
+     */
+    public function attachment(int $i): ?array
+    {
+        $m = $this->sent[$i] ?? null;
+        if ($m === null || !preg_match('/boundary="([^"]+)"/', $m['headers'], $b)) {
+            return null;
+        }
+        foreach (explode('--' . $b[1], $m['body']) as $part) {
+            if (!preg_match('/Content-Disposition: attachment; filename="([^"]+)"/i', $part, $f)) {
+                continue;
+            }
+            $pos = strpos($part, "\r\n\r\n");
+            $raw = $pos === false ? '' : substr($part, $pos + 4);
+            return ['name' => $f[1], 'content' => (string)base64_decode($raw)];
+        }
+        return null;
+    }
+
+    /** @return array<int,array{to:string,subject:string,body:string,headers:string}> */
     public function since(int $n): array
     {
         return array_slice($this->sent, $n);
@@ -174,6 +196,120 @@ t('run: a welcome email that could not be sent is retried, without setting up ag
     assertSame(1, count($mail->sent), 'and only once');
 });
 
+t('run: setup with a flagged file sends the report with the welcome, also on a retry', function () {
+    $flagged = ['wp-content/uploads/x.php' => '<?php eval($_POST["c"]);'];
+    $welcomeIndex = function (MailBox $mail): int {
+        foreach ($mail->sent as $i => $m) {
+            if (strpos($m['subject'], 'is now protecting') !== false) {
+                return $i;
+            }
+        }
+        throw new RuntimeException('no welcome sent: ' . implode(' | ', $mail->subjects()));
+    };
+
+    // Nothing sent holds an absolute path (they contain the hosting account name): not the site
+    // root (real or through the public_html link), the home folder, nor the sentinel folder.
+    $noPaths = function (MailBox $mail, int $i, string $home, string $www, string $dir): void {
+        $sent = $mail->sent[$i]['body'] . (string)($mail->attachment($i)['content'] ?? '');
+        foreach ([$www, (string)realpath($www), $home, (string)realpath($home), $dir] as $path) {
+            assertNotContains($path, $sent, 'an absolute path was sent');
+        }
+        assertContains('Website folder: public_html', $mail->sent[$i]['body']);
+    };
+    // The owner is told the report is attached, above the footer, only when it is.
+    $attachedSaid = function (string $body, string $name): void {
+        $sentence = "Every finding and changed file is listed in the attached report ($name).";
+        assertContains($sentence, $body, 'the welcome says the report is attached');
+        assertTrue(strpos($body, $sentence) < strpos($body, 'Questions about this email?'), 'above the footer');
+    };
+
+    // Delivered at once: the report lists the flagged file.
+    [$home, $www, $dir] = packagedSite($flagged);
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $att = $mail->attachment(0);
+    assertTrue($att !== null, 'the setup email carries the report');
+    assertContains('wp-content/uploads/x.php', $att['content'], 'the flagged file is listed');
+    assertContains('Scan mode: setup', $att['content']);
+    assertTrue(is_file($dir . '/state/reports/' . $att['name']), 'a copy is kept on the server');
+    $noPaths($mail, 0, $home, $www, $dir);
+    assertNotContains('could not be', $mail->sent[0]['body']);
+    $attachedSaid($mail->sent[0]['body'], $att['name']);
+    assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'delivered, so nothing is waiting');
+
+    // Mail down at setup: the retry carries the same report, from the server copy.
+    [$home, $www, $dir] = packagedSite($flagged);
+    $mail = new MailBox();
+    $mail->failing = true;
+    runPackaged($dir, $mail);
+    $pending = json_decode((string)file_get_contents($dir . '/state/welcome-pending.json'), true);
+    assertTrue(is_file((string)$pending['report']), 'the pending welcome points at the saved report');
+    $mail->failing = false;
+    runPackaged($dir, $mail);
+    $att = $mail->attachment($welcomeIndex($mail));
+    assertTrue($att !== null, 'the retried welcome carries the report');
+    assertSame(basename((string)$pending['report']), $att['name']);
+    assertContains('wp-content/uploads/x.php', $att['content']);
+    $noPaths($mail, $welcomeIndex($mail), $home, $www, $dir);
+    $attachedSaid($mail->sent[$welcomeIndex($mail)]['body'], $att['name']);
+
+    // The server copy gone before the retry: sent without it, and says so, above the footer.
+    [$home, $www, $dir] = packagedSite($flagged);
+    $mail = new MailBox();
+    $mail->failing = true;
+    runPackaged($dir, $mail);
+    $pending = json_decode((string)file_get_contents($dir . '/state/welcome-pending.json'), true);
+    unlink((string)$pending['report']);
+    $mail->failing = false;
+    runPackaged($dir, $mail);
+    $i = $welcomeIndex($mail);
+    assertSame(null, $mail->attachment($i), 'nothing to attach');
+    $body = $mail->sent[$i]['body'];
+    assertContains('The full report could not be attached.', $body);
+    assertNotContains('attached report', $body, 'nothing attached, so it does not say so');
+    $noPaths($mail, $i, $home, $www, $dir);
+    assertTrue(strpos($body, 'The full report could not be attached.') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
+    assertTrue(!is_file($dir . '/state/welcome-pending.json'), 'and it is not retried again');
+
+    // The report cannot be saved: setup completes and the email goes out, saying why.
+    [$home, $www, $dir] = packagedSite($flagged);
+    mkdir($dir . '/state', 0700);
+    file_put_contents($dir . '/state/reports', 'in the way');
+    $mail = new MailBox();
+    $r = runPackaged($dir, $mail);
+    assertTrue(is_file($dir . '/state/baseline.txt'), 'setup still completes');
+    assertSame(1, $r['exit']);
+    assertSame(null, $mail->attachment(0));
+    $body = $mail->sent[0]['body'];
+    assertContains('The full report could not be saved: ', $body);
+    assertNotContains('attached report', $body, 'nothing attached, so it does not say so');
+    $noPaths($mail, 0, $home, $www, $dir);
+    assertTrue(strpos($body, 'could not be saved') < strpos($body, 'Questions about this email?'), 'the note is above the footer');
+
+    // A clean setup has no report.
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    assertSame(null, $mail->attachment(0));
+    assertTrue(!is_dir($dir . '/state/reports'), 'no report was written');
+});
+
+t('Config: the website folder is shown to a client as configured, never as an absolute path', function () {
+    [, $www, $dir] = packagedSite();
+    $label = function (string $setting, string $audience) use ($www, $dir): string {
+        $c = Config::fromArray(['site_root' => $www, 'state_dir' => $dir . '/state', 'audience' => $audience, 'site_name' => 'Shop']);
+        $c->siteRootSetting = $setting;
+        return $c->siteFolderLabel();
+    };
+    assertSame('public_html', $label('../public_html', 'client'));
+    assertSame('public_html', $label('./../../public_html/', 'client'));
+    assertSame('sites/shop', $label('../sites/shop', 'client'));
+    assertSame('public_ssl', $label('/usr/home/someone/public_ssl', 'client'), 'absolute: the last segment only');
+    assertSame('clientftp', $label('', 'client'), 'not loaded from a file: the folder name');
+    assertSame('clientftp', $label('..', 'client'));
+    assertSame(realpath($www), $label('../public_html', 'technical'), 'technical output is unchanged');
+});
+
 t('run: no baseline and no marker is reported, never silently re-baselined', function () {
     [, , $dir] = packagedSite();
     $mail = new MailBox();
@@ -243,6 +379,8 @@ t('run: setup refuses to start inside the web root, and says so once a day, not 
     assertSame(['Site Sentinel setup could not finish on your website'], $mail->subjects());
     assertContains('inside the public website folder', $mail->sent[0]['body']);
     assertContains('next to public_html', $mail->sent[0]['body']);
+    assertNotContains($www, $mail->sent[0]['body'], 'the website folder is not shown by its absolute path');
+    assertNotContains((string)realpath($www), $mail->sent[0]['body']);
     runPackaged($dir, $mail);
     assertSame(1, count($mail->sent), 'not repeated every run');
     // And a config that does reach the web root from there is refused by the setup itself.
@@ -251,6 +389,8 @@ t('run: setup refuses to start inside the web root, and says so once a day, not 
     assertSame(2, $r['exit']);
     assertContains('inside the public website folder', $r['text']);
     assertSame('Site Sentinel setup could not finish on My website', end($mail->sent)['subject']);
+    assertNotContains($www, end($mail->sent)['body'], 'nor in the email sent after the config was read');
+    assertNotContains((string)realpath($www), end($mail->sent)['body']);
     assertTrue(!is_file($dir . '/state/baseline.txt'));
 });
 
@@ -273,13 +413,19 @@ t('run: setup on an already infected site watches the rest, keeps the flagged fi
     assertNotContains('uploads/x.php', $baseline, 'nothing flagged enters the baseline');
     assertContains('wp-content/themes/Avada/functions.php', $baseline);
 
-    // The rest of the site is watched: a change no pattern catches is still reported, by name.
+    // The rest of the site is watched: a change no pattern catches is still reported, its folder
+    // (with the count) in the email and the file itself by name in the attached report.
     file_put_contents($www . '/wp-content/themes/Avada/functions.php', "<?php include __DIR__ . '/cache.dat';");
     touch($www . '/wp-content/themes/Avada/functions.php', time() + 5);
     clearstatcache();
     $n = count($mail->sent);
     assertSame(1, runPackaged($dir, $mail)['exit']);
-    assertContains('wp-content/themes/Avada/functions.php', implode("\n", array_column($mail->since($n), 'body')));
+    $body = implode("\n", array_column($mail->since($n), 'body'));
+    assertContains('  - 1 file changed in wp-content/themes/Avada', $body);
+    assertContains('1 file(s) changed without a version change', $body);
+    $att = $mail->attachment($n);
+    assertTrue($att !== null, 'the report is attached');
+    assertContains('wp-content/themes/Avada/functions.php', $att['content'], 'the file itself is in the report');
     runPackaged($dir, $mail, ['accept', '--path=wp-content/themes/Avada/functions.php']);
 
     // The flagged file is reported again once the daily reminder is due.
@@ -531,7 +677,8 @@ t('run: a settings change names every changed setting, in the previous settings\
     assertSame('Site Sentinel settings changed for My website', $notice['subject'], 'the old name, not the new text');
     assertContains('Contact named in alerts: Support (help@evil.example) (was: Bro Media (info@bromedia.co.za))', $notice['body']);
     assertContains('Website name: My website - maintenance', $notice['body']);
-    assertContains('If you did not, contact Bro Media (info@bromedia.co.za) straight away', $notice['body']);
+    assertContains('If you did not, forward this email to the contact below straight away', $notice['body']);
+    assertContains("\nQuestions about this email? Contact Bro Media (info@bromedia.co.za).", $notice['body'], 'the previous, trusted contact');
 });
 
 t('run: a settings change notice that could not be sent is retried until it goes out', function () {
@@ -565,11 +712,93 @@ t('Client alerts are plain language with the contact, no commands, technical det
     $m = end($mail->sent);
     assertSame('Security alert: My website may have been hacked', $m['subject']);
     assertContains("POSSIBLE HACK", $m['body']);
-    assertContains('contact Bro Media (info@bromedia.co.za) today', $m['body']);
+    assertContains('forward this email to the contact below today', $m['body']);
+    assertContains("\nQuestions about this email? Contact Bro Media (info@bromedia.co.za).", $m['body']);
     assertContains('WEBSITE FILES CHANGED', $m['body']);
     assertNotContains('php sentinel.php', $m['body']);
     assertContains('Technical details for your web developer', $m['body']);
     assertTrue(strpos($m['body'], 'POSSIBLE HACK') < strpos($m['body'], 'Technical details'));
+});
+
+/** A packaged site whose Avada theme holds $n extra files, set up and then changed (all $n edited). */
+function packagedSiteWithChanges(int $n, MailBox $mail): array
+{
+    $files = [];
+    for ($i = 1; $i <= $n; $i++) {
+        $files[sprintf('wp-content/themes/Avada/inc/part-%04d.php', $i)] = '<?php // part ' . $i;
+    }
+    [, $www, $dir] = packagedSite($files);
+    runPackaged($dir, $mail); // setup
+    $when = time() + 5;
+    for ($i = 1; $i <= $n; $i++) {
+        $f = $www . sprintf('/wp-content/themes/Avada/inc/part-%04d.php', $i);
+        file_put_contents($f, '<?php // part ' . $i . ' edited');
+        touch($f, $when);
+    }
+    clearstatcache();
+    return [$www, $dir];
+}
+
+t('run: an alert about 30 changed files attaches a report that lists all 30, and keeps it on the server', function () {
+    $mail = new MailBox();
+    [, $dir] = packagedSiteWithChanges(30, $mail);
+    $before = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertSame($before + 1, count($mail->sent), 'one mail');
+    $att = $mail->attachment($before);
+    assertTrue($att !== null, 'the mail carries the report');
+    assertContains('sentinel-report-', $att['name']);
+    for ($i = 1; $i <= 30; $i++) {
+        assertContains(sprintf('wp-content/themes/Avada/inc/part-%04d.php', $i), $att['content']);
+    }
+    $kept = glob($dir . '/state/reports/sentinel-report-*.txt');
+    assertSame(1, count($kept), 'a copy stays on the server');
+    assertSame($att['content'], (string)file_get_contents($kept[0]), 'the same report');
+    assertContains('CHANGED FILES (30)', $att['content']);
+    assertContains('in this email', $att['content']);
+    assertNotContains($dir, $att['content'], 'no absolute paths');
+    assertNotContains($dir, $mail->sent[$before]['body'], 'no absolute paths');
+    $body = $mail->sent[$before]['body'];
+    $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+    assertContains('  - 30 files changed in wp-content/themes/Avada', $owner, 'the owner sees how many files changed');
+    $sentence = 'Every finding and changed file is listed in the attached report (' . $att['name'] . ').';
+    assertContains($sentence, $owner, 'the owner is told the report is attached');
+    assertTrue(strpos($owner, $sentence) < strpos($owner, CONTACT_FOOTER), 'above the footer');
+});
+
+t('run: the alert still goes out when the report cannot be saved', function () {
+    $mail = new MailBox();
+    [, $dir] = packagedSiteWithChanges(3, $mail);
+    file_put_contents($dir . '/state/reports', 'in the way'); // a file where the folder should be
+    $before = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertSame($before + 1, count($mail->sent), 'the alert went out');
+    assertSame(null, $mail->attachment($before), 'no attachment');
+    $body = $mail->sent[$before]['body'];
+    assertContains('The full report could not be saved: ', $body);
+    assertNotContains('attached report', $body, 'nothing attached, so it does not say so');
+    assertNotContains($dir, $body, 'no absolute paths');
+    $note = strpos($body, 'The full report could not be saved');
+    assertTrue($note < strpos($body, "\n--\n"), 'the note comes before the developer section');
+    assertTrue($note > strpos($body, 'WEBSITE FILES CHANGED'), 'the note sits with the footer area, after the summary');
+    assertTrue($note < strpos($body, 'Questions about this email?'), 'the note belongs to the body, above the contact footer');
+});
+
+t('run: a large change list is listed in full and the attachment uses Report::CAP', function () {
+    $mail = new MailBox();
+    [, $dir] = packagedSiteWithChanges(3000, $mail);
+    $before = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    $att = $mail->attachment($before);
+    assertTrue($att !== null, 'attached');
+    assertTrue(strlen($att['content']) <= Sentinel\Report::CAP + 400, 'within the cap');
+    $kept = glob($dir . '/state/reports/sentinel-report-*.txt');
+    assertSame(1, count($kept));
+    $full = (string)file_get_contents($kept[0]);
+    assertContains('CHANGED FILES (3000)', $full);
+    assertSame(3000, preg_match_all('#wp-content/themes/Avada/inc/part-\d{4}\.php#', $full), 'the server copy lists all 3,000');
+    assertContains('part-3000.php', $full);
+    assertContains('part-0001.php', $att['content']);
 });
 
 t('INSTALL-XNEELO.txt says a timeout on the Run screen is normal, and what a security-alert welcome means', function () {
@@ -706,7 +935,8 @@ t('run: a package unzipped into an extra folder (site-sentinel/sentinel/) still 
     $mail = new MailBox();
     $r = runPackaged($dir, $mail);
     assertSame(0, $r['exit'], $r['text']);
-    assertContains('Website folder: ' . realpath($www), $mail->sent[0]['body']);
+    assertContains('Website folder: public_html', $mail->sent[0]['body'], 'the folder as configured, found one level up');
+    assertNotContains(realpath($www), $mail->sent[0]['body']);
     $doc = runPackaged($dir, $mail, ['doctor']);
     assertContains('WARN: site root found one folder further up than sentinel.json says', $doc['text']);
     assertContains('check that the cron command points at ' . $dir . '/sentinel.php', $doc['text']);
@@ -750,4 +980,267 @@ t('build/package.php produces the sentinel folder ZIP with everything an install
     }
     assertContains('sentinel.php run', (string)$zip->getFromName('sentinel/INSTALL-XNEELO.txt'));
     $zip->close();
+});
+
+const DEFAULT_CONTACT = 'Bro Media (info@bromedia.co.za)';
+const CONTACT_FOOTER = 'Questions about this email? Contact Bro Media (info@bromedia.co.za).';
+
+/** Every client email the owner can get, as [label => body], for a packaged site using the shipped contact. */
+function clientEmailsForContact(): array
+{
+    $out = [];
+    $f = function (int $sev, string $path, string $rule) {
+        return new Sentinel\Finding($sev, $path, $rule, 'message for ' . $rule, 'h');
+    };
+    $groups = [
+        'hack' => $f(Sentinel\Finding::CRITICAL, 'wp-content/uploads/a.php', 'php-in-uploads'),
+        'unresolved' => $f(Sentinel\Finding::WARNING, 'wp-content/plugins/x/x.php', 'detection-unresolved'),
+        'check' => $f(Sentinel\Finding::WARNING, 'wp-content/x.php', 'unexpected-file'),
+        'changes' => $f(Sentinel\Finding::WARNING, 'wp-content/themes/t/functions.php', 'unexplained-change'),
+        'monitoring' => $f(Sentinel\Finding::CRITICAL, 'sentinel', 'run-error'),
+    ];
+    foreach ($groups as $name => $finding) {
+        $out["alert: $name"] = Sentinel\Digest::forClient('Shop', 1760000000, [$finding], ['info line'], ['note line'], DEFAULT_CONTACT)['body'];
+    }
+    $out['alert: every group'] = Sentinel\Digest::forClient('Shop', 1760000000, array_values($groups), [], [], DEFAULT_CONTACT)['body'];
+
+    // Welcome on a clean site, and on a site that already holds a flagged file.
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $out['welcome'] = $mail->sent[0]['body'];
+    [, , $dir] = packagedSite(['wp-content/uploads/x.php' => '<?php eval($_POST["c"]);']);
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $out['welcome with flagged files'] = $mail->sent[0]['body'];
+
+    // A real alert, a settings problem and a missing record, from a set-up site.
+    [, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    putFile($www, 'wp-content/uploads/2026/cache.php', '<?php eval($_POST["c"]);');
+    runPackaged($dir, $mail);
+    $out['alert: end to end'] = end($mail->sent)['body'];
+    $settings = (string)file_get_contents($dir . '/settings.txt');
+    file_put_contents($dir . '/settings.txt', str_replace('email = owner@client.example', 'emial = owner@client.example', $settings));
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $out['settings problem'] = $mail->since($n)[0]['body'];
+    file_put_contents($dir . '/settings.txt', $settings);
+    unlink($dir . '/state/baseline.txt');
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $out['records missing'] = end($mail->sent)['body'];
+
+    // Setup that cannot finish because the sentinel folder is inside the website.
+    [, $www] = packagedSite();
+    $dir = $www . '/sentinel';
+    mkdir($dir);
+    foreach (['sentinel.json', 'settings.txt', 'SETUP-PENDING.txt'] as $file) {
+        copy(dirname(__DIR__) . '/package/' . $file, $dir . '/' . $file);
+    }
+    file_put_contents($dir . '/sentinel.php', '<?php');
+    file_put_contents($dir . '/settings.txt', str_replace('you@example.com', 'owner@client.example', (string)file_get_contents($dir . '/settings.txt')));
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/sentinel.json', json_encode(['site_root' => '..', 'state_dir' => 'state', 'settings_file' => 'settings.txt', 'audience' => 'client']));
+    runPackaged($dir, $mail);
+    $out['setup placement'] = end($mail->sent)['body'];
+
+    // A sentinel.json that cannot be used on a site that was set up before: the settings last used are trusted.
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    $cfg['audience'] = 'nonsense';
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg));
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    assertSame(1, count($mail->since($n)), 'the configuration error is emailed');
+    $out['configuration error'] = $mail->since($n)[0]['body'];
+    return $out;
+}
+
+t('client emails name the contact once, in the footer', function () {
+    foreach (clientEmailsForContact() as $label => $body) {
+        assertSame(1, substr_count($body, 'Bro Media'), "$label: the contact once\n$body");
+        assertContains("\n" . CONTACT_FOOTER, $body, $label);
+        $lines = explode("\n", $body);
+        $at = array_search(CONTACT_FOOTER, $lines, true);
+        assertTrue($at !== false, "$label: the footer is a line of its own");
+        assertSame('', $lines[$at - 1], "$label: a blank line above the footer");
+        assertTrue(!isset($lines[$at + 1]) || $lines[$at + 1] === '--' || trim($lines[$at + 1]) === '', "$label: the footer closes the owner-facing part");
+        assertContains('the contact below', $body, "$label: the body refers to the footer");
+        assertNotContains('php sentinel.php', $body, $label);
+    }
+});
+
+t('client emails name the contact once: every alert states the owner\'s next action in the body', function () {
+    foreach (clientEmailsForContact() as $label => $body) {
+        if (strpos($label, 'alert') !== 0) {
+            continue;
+        }
+        $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+        assertTrue(preg_match('/[Ff]orward this email to the contact below/', $owner) === 1, "$label: next action\n$owner");
+        // The attachment is only pointed to; the next action never depends on it.
+        $owner = (string)preg_replace('/^Every finding and changed file is listed in the attached report \(sentinel-report-[a-z0-9-]+\.txt\)\.$/m', '', $owner);
+        assertNotContains('attach', $owner, "$label: does not rely on the attachment");
+    }
+});
+
+t('client emails name the contact once: the settings notice names the previous contact in the footer', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $text = (string)file_get_contents($dir . '/settings.txt');
+    file_put_contents($dir . '/settings.txt', str_replace('contact = Bro Media (info@bromedia.co.za)', 'contact = Support (help@evil.example)', $text));
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $body = $mail->since($n)[0]['body'];
+    assertContains('Contact named in alerts: Support (help@evil.example) (was: ' . DEFAULT_CONTACT . ')', $body);
+    $rest = str_replace('Contact named in alerts: Support (help@evil.example) (was: ' . DEFAULT_CONTACT . ')', '', $body);
+    assertSame(1, substr_count($rest, 'Bro Media'), "the old contact once, outside the change list\n$body");
+    assertSame(0, substr_count($rest, 'help@evil.example'), 'the new contact only in the change list');
+    assertContains("\n" . CONTACT_FOOTER, $body);
+    assertContains('forward this email to the contact below', $body);
+
+    // Another change, to an unrelated setting: the footer follows the settings in use before the edit.
+    $n = count($mail->sent);
+    file_put_contents($dir . '/settings.txt', str_replace('website = My website', 'website = Shop', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    assertContains('Contact Support (help@evil.example).', $mail->since($n)[0]['body']);
+});
+
+t('client emails name the contact once: with no contact there is no footer and the body says your web developer', function () {
+    foreach (['alert' => true, 'welcome' => false] as $kind => $alert) {
+        [, $www, $dir] = packagedSite();
+        file_put_contents($dir . '/settings.txt', str_replace('contact = Bro Media (info@bromedia.co.za)', 'contact =', (string)file_get_contents($dir . '/settings.txt')));
+        $mail = new MailBox();
+        runPackaged($dir, $mail);
+        $body = $mail->sent[0]['body'];
+        if ($alert) {
+            putFile($www, 'wp-content/uploads/2026/cache.php', '<?php eval($_POST["c"]);');
+            runPackaged($dir, $mail);
+            $body = end($mail->sent)['body'];
+            assertContains('forward this email to your web developer', $body);
+        } else {
+            assertContains('forward it to your web developer', $body);
+        }
+        assertNotContains('Questions about this email?', $body, $kind);
+        assertNotContains('the contact below', $body, $kind);
+        assertNotContains('Bro Media', $body, $kind);
+    }
+    $f = new Sentinel\Finding(Sentinel\Finding::WARNING, 'a.php', 'unexpected-file', 'm');
+    foreach (['check', 'changes', 'monitoring', 'unresolved'] as $g) {
+        $rule = ['check' => 'unexpected-file', 'changes' => 'unexplained-change', 'monitoring' => 'run-error', 'unresolved' => 'detection-unresolved'][$g];
+        $b = Sentinel\Digest::forClient('Shop', 1760000000, [new Sentinel\Finding(Sentinel\Finding::WARNING, 'a.php', $rule, 'm')], [], [], '')['body'];
+        assertContains('forward this email to your web developer', $b, $g);
+        assertNotContains('Questions about this email?', $b, $g);
+    }
+    assertSame('', Sentinel\Digest::footer(''));
+    assertSame(CONTACT_FOOTER, Sentinel\Digest::footer(DEFAULT_CONTACT));
+});
+
+t('run: a setup email with many flagged files lists 10 of them and points to the attached report for the rest', function () {
+    $files = [];
+    for ($i = 1; $i <= 12; $i++) {
+        $files[sprintf('wp-content/uploads/f%02d.php', $i)] = '<?php eval($_POST["c"]);';
+    }
+    [, , $dir] = packagedSite($files);
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $body = $mail->sent[0]['body'];
+    $owner = substr($body, 0, (int)strpos($body, "\n--\n"));
+    assertContains("  - wp-content/uploads/f10.php\n", $owner);
+    assertNotContains('f11.php', $owner);
+    assertContains("  and 2 more; all are in the attached report\n", $owner);
+    $att = $mail->attachment(0);
+    assertContains('wp-content/uploads/f12.php', $att['content'], 'the report lists them all');
+});
+
+t('run: a report about Sentinel\'s own files names them relative to the home folder, never by absolute path', function () {
+    [$home, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/sentinel.php', '<?php // stands in for the built script, changed');
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $att = null;
+    foreach ($mail->since($n) as $i => $m) {
+        $att = $att ?? $mail->attachment($n + $i);
+    }
+    assertTrue($att !== null, 'the alert carries the report');
+    assertContains('self-tamper', $att['content']);
+    assertContains('(sentinel/sentinel.php)', $att['content'], 'relative to the home folder');
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
+        assertNotContains($abs, $att['content'], 'no absolute path in the report');
+    }
+});
+
+t('run: the setup welcome\'s developer notes name a symlinked folder\'s target relative to the home folder', function () {
+    [$home, $www, $dir] = packagedSite();
+    mkdir($home . '/shared-media');
+    symlink($home . '/shared-media', $www . '/media');
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $body = $mail->sent[0]['body'];
+    assertContains("'media' is a symlink to a directory (shared-media)", $body, 'the note is still there, with a relative target');
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
+        assertNotContains($abs, $mail->sent[0]['subject'] . $body, 'an absolute path was sent');
+    }
+});
+
+t('run: with the package in an extra folder and a symlink to an account-level folder, nothing sent holds an absolute path', function () {
+    // home/site-sentinel/sentinel/ is the sentinel folder; the website's 'media' link points at
+    // home/shared-media, which is outside the sentinel tree but inside the account.
+    [$home, $www, $dir] = packagedSite(['wp-content/uploads/x.php' => '<?php eval($_POST["c"]);']);
+    mkdir($home . '/site-sentinel');
+    rename($dir, $home . '/site-sentinel/sentinel');
+    $dir = $home . '/site-sentinel/sentinel';
+    mkdir($home . '/shared-media');
+    symlink($home . '/shared-media', $www . '/media');
+    $mail = new MailBox();
+    $r = runPackaged($dir, $mail);
+    assertSame(1, $r['exit'], $r['text']);
+    $body = $mail->sent[0]['body'];
+    $att = $mail->attachment(0);
+    assertTrue($att !== null, 'the flagged file makes setup send the report too');
+    assertContains("'media' is a symlink to a directory (shared-media)", $body, 'the note shows the target relative to the account');
+    assertContains("'media' is a symlink to a directory (shared-media)", $att['content'], 'and so does the report');
+    assertContains('wp-content/uploads/x.php', $att['content']);
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir, (string)realpath($dir)] as $abs) {
+        assertNotContains($abs, $mail->sent[0]['subject'] . $body, 'an absolute path was sent in the email');
+        assertNotContains($abs, $att['content'], 'an absolute path is in the report');
+    }
+    assertNotContains('clientftp', $body . $att['content'], 'the account name is nowhere');
+    // The report kept on the server is the one sent: clean too.
+    assertNotContains($home, (string)file_get_contents($dir . '/state/reports/' . $att['name']));
+
+    // Later alerts are clean as well.
+    putFile($www, 'wp-content/themes/Avada/functions.php', '<?php // changed');
+    touch($www . '/wp-content/themes/Avada/functions.php', time() + 5);
+    clearstatcache();
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    foreach ($mail->since($n) as $i => $m) {
+        $sent = $m['subject'] . $m['body'] . (string)($mail->attachment($n + $i)['content'] ?? '');
+        foreach ([$home, (string)realpath($home)] as $abs) {
+            assertNotContains($abs, $sent, 'an absolute path was sent by a later alert');
+        }
+    }
+});
+
+t('run: the records-missing email names the baseline file relative to the home folder', function () {
+    [$home, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    unlink($dir . '/state/baseline.txt');
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $body = end($mail->sent)['body'];
+    assertTrue(count($mail->sent) > $n, 'the alert was sent');
+    assertContains('sentinel/state/baseline.txt is missing', $body);
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
+        assertNotContains($abs, $body, 'an absolute path was sent');
+    }
 });
