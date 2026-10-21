@@ -1152,3 +1152,22 @@ t('run: a setup email with many flagged files lists 10 of them and points to the
     $att = $mail->attachment(0);
     assertContains('wp-content/uploads/f12.php', $att['content'], 'the report lists them all');
 });
+
+t('run: a report about Sentinel\'s own files names them relative to the home folder, never by absolute path', function () {
+    [$home, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/sentinel.php', '<?php // stands in for the built script, changed');
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $att = null;
+    foreach ($mail->since($n) as $i => $m) {
+        $att = $att ?? $mail->attachment($n + $i);
+    }
+    assertTrue($att !== null, 'the alert carries the report');
+    assertContains('self-tamper', $att['content']);
+    assertContains('(sentinel/sentinel.php)', $att['content'], 'relative to the home folder');
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
+        assertNotContains($abs, $att['content'], 'no absolute path in the report');
+    }
+});

@@ -51,9 +51,13 @@ final class Report
     }
 
     /**
-     * Writes the report to $dir/<fileName> and prunes older copies.
+     * Writes the report to $dir/<fileName> (or <fileName>-2, -3, ... when a report of the same
+     * minute is already there: never overwritten, never written through a planted link) and
+     * prunes older copies.
      *
-     * @param array{site:string, root:string, ts:int, version:string, mode:string, complete:bool, nested?:string[]} $meta root only turns absolute paths in notes into relative ones
+     * @param array{site:string, root:string, ts:int, version:string, mode:string, complete:bool, nested?:string[], home?:string} $meta
+     *        root (the website folder) and home (the folder holding the sentinel folder) are only used
+     *        to turn absolute paths in any line into relative ones
      * @param Finding[] $findings every finding of the run
      * @param string[] $dueKeys Finding::key() of the findings in this email
      * @param array[] $changes Differ::diff()['changes']
@@ -66,10 +70,16 @@ final class Report
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new \RuntimeException("cannot create report folder");
         }
-        $file = rtrim($dir, '/') . '/' . self::fileName((string)$meta['site'], (int)$meta['ts']);
-        $fh = @fopen($file, 'wb');
-        if ($fh === false) {
-            throw new \RuntimeException('cannot write report');
+        $name = self::fileName((string)$meta['site'], (int)$meta['ts']);
+        for ($n = 1;; $n++) {
+            $file = rtrim($dir, '/') . '/' . ($n === 1 ? $name : substr($name, 0, -4) . "-$n.txt");
+            $fh = @fopen($file, 'xb'); // fails on anything already there, a link included
+            if ($fh !== false) {
+                break;
+            }
+            if ((!file_exists($file) && !is_link($file)) || $n >= 100) {
+                throw new \RuntimeException('cannot write report');
+            }
         }
         @chmod($file, 0600);
         try {
@@ -90,8 +100,9 @@ final class Report
     /** @param resource $fh */
     private static function stream($fh, array $meta, array $findings, array $due, array $changes, array $outcomes, array $notes): void
     {
-        $put = function (string $line) use ($fh): void {
-            if (@fwrite($fh, Finding::line($line) . "\n") === false) {
+        $scrub = self::scrubber((string)($meta['root'] ?? ''), (string)($meta['home'] ?? ''));
+        $put = function (string $line) use ($fh, $scrub): void {
+            if (@fwrite($fh, Finding::line($scrub($line)) . "\n") === false) {
                 throw new \RuntimeException('cannot write report');
             }
         };
@@ -149,10 +160,6 @@ final class Report
             $total++;
         }
         uksort($groups, [PathOrder::class, 'compare']);
-        $withFinding = [];
-        foreach ($findings as $f) {
-            $withFinding[$f->path] = true;
-        }
         $put("CHANGED FILES ($total) - $scope; times are UTC");
         $put('');
         foreach ($groups as $group => $indexes) {
@@ -160,7 +167,7 @@ final class Report
             foreach ($indexes as $i) {
                 $c = $changes[$i];
                 $path = (string)$c['path'];
-                $status = $outcomes[$path] ?? (isset($withFinding[$path]) ? 'reported' : 'accepted: not code');
+                $status = $outcomes[$path] ?? 'reported'; // never claimed as accepted without an outcome saying so
                 $put('  ' . self::changeLine($c) . ' [' . $status . '] ' . $path);
             }
             $put('');
@@ -173,7 +180,7 @@ final class Report
         if ($notes) {
             $put('NOTES');
             foreach ($notes as $n) {
-                $put('  - ' . self::relative((string)$n, (string)($meta['root'] ?? '')));
+                $put('  - ' . $n);
             }
         }
     }
@@ -202,14 +209,42 @@ final class Report
         return !empty($c['content_same']) || (($old['size'] ?? null) === ($new['size'] ?? 0) && ($old['mtime'] ?? null) === ($new['mtime'] ?? 0));
     }
 
-    /** A note with the website folder's absolute path turned into a relative one. */
-    private static function relative(string $note, string $root): string
+    /**
+     * Turns the absolute paths of the website folder and of the account's home (as given and as
+     * resolved through links) into relative ones: "<root>/x" becomes "x" and "<home>/sentinel/x"
+     * becomes "sentinel/x". Only the exact folder matches, so "<root>_old" is left alone; a folder
+     * that is the file system root is never used.
+     *
+     * @return callable(string): string
+     */
+    private static function scrubber(string $root, string $home): callable
     {
-        $root = rtrim($root, '/');
-        if ($root === '') {
-            return $note;
+        $map = [];
+        foreach ([[$home, '~'], [$root, '.']] as [$dir, $bare]) { // the website folder wins a tie
+            foreach ([$dir, $dir !== '' ? (string)realpath($dir) : ''] as $d) {
+                $d = rtrim($d, '/');
+                if ($d !== '' && $d[0] === '/') {
+                    $map[$d] = $bare;
+                }
+            }
         }
-        return str_replace([$root . '/', $root], ['', '.'], $note);
+        if (!$map) {
+            return function (string $line): string {
+                return $line;
+            };
+        }
+        uksort($map, function ($a, $b) {
+            return strlen((string)$b) <=> strlen((string)$a); // the most specific folder first
+        });
+        $quoted = array_map(function ($d) {
+            return preg_quote((string)$d, '#');
+        }, array_keys($map));
+        $re = '#(?<![A-Za-z0-9._~/-])(' . implode('|', $quoted) . ')(?:(/)|(?![A-Za-z0-9._~-]))#';
+        return function (string $line) use ($re, $map): string {
+            return (string)preg_replace_callback($re, function ($m) use ($map) {
+                return isset($m[2]) && $m[2] === '/' ? '' : $map[$m[1]];
+            }, $line);
+        };
     }
 
     /** Deletes old copies: keeps the newest KEEP and at most MAX_BYTES in total; $newest is never deleted. */

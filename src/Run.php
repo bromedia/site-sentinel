@@ -221,7 +221,7 @@ final class Run
                 try {
                     $pending['report'] = Report::write(
                         $state->path('reports'),
-                        ['site' => $site, 'root' => $config->siteRoot, 'ts' => $now, 'version' => VERSION, 'mode' => 'setup', 'complete' => true, 'nested' => $config->nestedWordPress],
+                        ['site' => $site, 'root' => $config->siteRoot, 'home' => dirname(dirname($state->dir())), 'ts' => $now, 'version' => VERSION, 'mode' => 'setup', 'complete' => true, 'nested' => $config->nestedWordPress],
                         $scan['findings'],
                         array_map(function (Finding $f): string {
                             return $f->key();

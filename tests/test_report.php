@@ -84,7 +84,7 @@ t("Report shows each file's change type, size, time, code-file SHA-256 and statu
     assertContains('permissions only | 444 B', $lines['a/perm.php']);
     assertContains('[accepted: permissions only]', $lines['a/perm.php']);
     assertContains('sha256 -', $lines['a/pic.jpg']);
-    assertContains('[accepted: not code]', $lines['a/pic.jpg'], 'no outcome and no finding');
+    assertContains('[reported]', $lines['a/pic.jpg'], 'no outcome and no finding: never claimed as accepted');
     assertContains('[reported]', $lines['a/flagged.php'], 'no outcome but a finding');
     assertSame(true, in_array('reported', Report::STATUSES, true) && in_array('held: judged next run', Report::STATUSES, true));
 });
@@ -121,6 +121,35 @@ t('Report holds no absolute paths or contents', function () {
     assertNotContains('/home/', $text);
     assertNotContains('hunter2-secret', $text);
     assertContains('(wp-includes)', $text, 'the note shows the path relative to the website folder');
+
+    // Findings carry absolute paths too: the account's home (the folder holding the sentinel
+    // folder) and the website folder, also reached through a link, are scrubbed from every line.
+    $base = tmpdir();
+    $home = $base . '/home/acct';
+    $real = $base . '/www/users/acct';
+    mkdir($home . '/sentinel/state', 0700, true);
+    mkdir($real, 0755, true);
+    symlink($real, $home . '/public_html');
+    $site = $home . '/public_html';
+    $findings = [
+        new Finding(Finding::CRITICAL, "sentinel.php ($home/sentinel/sentinel.php)", 'self-tamper', 'Sentinel file changed since it was last accepted', 'h1'),
+        new Finding(Finding::CRITICAL, 'sentinel', 'state-write-failed', "Scan state could not be saved (cannot write $home/sentinel/state/baseline.txt.tmp (disk full or over quota?)). The previous baseline was kept", 'h2'),
+        new Finding(Finding::WARNING, 'wp-content/x.php', 'unexpected-file', "Seen at $real/wp-content/x.php and $site/wp-content/x.php", 'h3'),
+    ];
+    $notes = ["'old' is a symlink to a directory ($home/public_html_old) and is not monitored.", "Checksums missing for $site"];
+    $text = reportText(reportMeta(['root' => $site, 'home' => $home]), $findings, [], [], [], $notes);
+    foreach ([$base, $home, $site, $real, '/home/acct', '/www/users'] as $abs) {
+        assertNotContains($abs, $text, 'no absolute path remains');
+    }
+    assertContains('sentinel.php (sentinel/sentinel.php)', $text, 'self-tamper path relative to the home folder');
+    assertContains('cannot write sentinel/state/baseline.txt.tmp (disk full', $text, 'state path relative to the home folder');
+    assertContains('Seen at wp-content/x.php and wp-content/x.php', $text, 'the website folder, real or linked, relative to itself');
+    assertContains('(public_html_old)', $text, 'a sibling folder is not taken for the website folder');
+    assertContains('Checksums missing for .', $text);
+
+    // A home that is the file system root (a state folder right under /) is never scrubbed as a prefix.
+    $text = reportText(reportMeta(['root' => '', 'home' => '/']), [new Finding(Finding::WARNING, 'a.php', 'unexpected-file', 'see /etc/passwd')], [], []);
+    assertContains('see /etc/passwd', $text);
 });
 
 t('Report keeps the newest 30 and cuts the attachment at the cap', function () {
@@ -185,4 +214,28 @@ t('Report keeps the newest 30 and cuts the attachment at the cap', function () {
     assertThrows(RuntimeException::class, function () {
         Report::write('/proc/nonexistent/reports', reportMeta(), [], [], [], [], []);
     });
+});
+
+t('Report: two reports in the same minute are both kept, never one written over the other or through a link', function () {
+    $dir = tmpdir() . '/reports';
+    $ts = gmmktime(14, 30, 0, 10, 21, 2026);
+    $first = Report::write($dir, reportMeta(['ts' => $ts, 'mode' => 'check']), [], [], [], [], []);
+    $second = Report::write($dir, reportMeta(['ts' => $ts, 'mode' => 'full']), [], [], [], [], []);
+    $third = Report::write($dir, reportMeta(['ts' => $ts, 'mode' => 'full']), [], [], [], [], []);
+    assertSame($dir . '/sentinel-report-example-shop-20261021-1430.txt', $first);
+    assertSame($dir . '/sentinel-report-example-shop-20261021-1430-2.txt', $second);
+    assertSame($dir . '/sentinel-report-example-shop-20261021-1430-3.txt', $third);
+    assertContains('Scan mode: check', (string)file_get_contents($first), 'the first is not overwritten');
+    assertContains('Scan mode: full', (string)file_get_contents($second));
+    assertSame(3, count(glob($dir . '/sentinel-report-*.txt')), 'pruning counts the numbered names');
+
+    // A link planted where the next report would go is not written through.
+    $dir2 = tmpdir() . '/reports';
+    mkdir($dir2);
+    $target = tmpdir() . '/target.txt';
+    file_put_contents($target, 'keep me');
+    symlink($target, $dir2 . '/' . Report::fileName('Example Shop', $ts));
+    $file = Report::write($dir2, reportMeta(['ts' => $ts]), [], [], [], [], []);
+    assertSame('keep me', (string)file_get_contents($target));
+    assertSame($dir2 . '/sentinel-report-example-shop-20261021-1430-2.txt', $file);
 });

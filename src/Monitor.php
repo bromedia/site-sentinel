@@ -241,6 +241,7 @@ final class Monitor
                     [
                         'site' => $this->config->siteName,
                         'root' => $this->config->siteRoot,
+                        'home' => dirname(dirname($this->state->dir())), // the folder holding the sentinel folder
                         'ts' => $now,
                         'version' => VERSION,
                         'mode' => $mode,
