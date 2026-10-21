@@ -7,6 +7,7 @@ use Sentinel\ExternalScanner;
 use Sentinel\Finding;
 use Sentinel\LocationScanner;
 use Sentinel\PatternScanner;
+use Sentinel\Report;
 use Sentinel\Rules;
 use Sentinel\VersionTracker;
 use Sentinel\WpChecksum;
@@ -158,7 +159,8 @@ t('Analyzer: a brand-new plugin directory is a Warning and many files make one f
     $r = runAnalysis($c, $b, null, $old);
     assertSame(['unexplained-change@wp-content/plugins/bar'], ruleList($r));
     assertContains('9 file(s)', $r['findings'][0]->message);
-    assertContains('more', $r['findings'][0]->message);
+    assertContains('each one is listed in the report', $r['findings'][0]->message);
+    assertNotContains('more', $r['findings'][0]->message);
 });
 
 t('Analyzer: official checksum match is accepted silently and beats pattern hits; mismatch and extras are flagged', function () {
@@ -322,4 +324,66 @@ t('Analyzer: a zero grace period or no clock disables deferral', function () {
     [$root2, $c2, $b2] = wpFixture([], ['update_grace_seconds' => 120]);
     putFile($root2, 'lib/a.php', '<?php // a');
     assertSame(['unexplained-change@lib'], ruleList(runAnalysis($c2, $b2, null, [], false, false, 0)));
+});
+
+t('Analyzer reports an outcome for every changed file', function () {
+    [$root, $c, $b] = wpFixture([
+        'wp-includes/ok.php' => 'old',
+        'notes.txt' => 'n',
+        'lib/perm.php' => '<?php // perm',
+        'lib/gone.php' => '<?php // gone',
+    ], ['auto_accept_unverified_updates' => true, 'update_grace_seconds' => 120]);
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-includes/ok.php', 'official');                    // verified against the official checksum
+    bump($root, 'notes.txt', 'changed');                               // not code
+    chmod($root . '/lib/perm.php', 0600);                              // permissions only
+    unlink($root . '/lib/gone.php');                                   // removed, not sensitive
+    bump($root, 'lib/fresh.php', '<?php // fresh', 1000);              // arrived inside the grace period
+    putFile($root, 'wp-content/themes/t/evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER'); // pattern hit
+    bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n"); // approved update
+    bump($root, 'lib/a.php', '<?php // a');                            // unexplained change
+    bump($root, 'lib/b.php', '<?php // b');
+    $http = new FakeHttp();
+    coreRoute($http, ['wp-includes/ok.php' => 'official']);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/', 404, '{"error":"not found"}');
+    $a = analyzerFor($c, new WpChecksum($http, $c, tmpdir()));
+    $changes = array_values(diffByPath($c, $b));
+    $r = $a->analyze($changes, $old, VersionTracker::read($c), false, time() + 600);
+
+    $expected = [
+        'wp-includes/ok.php' => 'accepted: official copy',
+        'notes.txt' => 'accepted: not code',
+        'lib/perm.php' => 'accepted: permissions only',
+        'lib/gone.php' => 'accepted: removed',
+        'lib/fresh.php' => 'held: judged next run',
+        'wp-content/themes/t/evil.php' => 'reported',
+        'wp-content/plugins/foo/foo.php' => 'accepted: approved update',
+        'lib/a.php' => 'reported',
+        'lib/b.php' => 'reported',
+    ];
+    $got = $r['outcomes'];
+    ksort($expected);
+    ksort($got);
+    assertSame($expected, $got);
+    $paths = array_map(function ($ch) { return $ch['path']; }, $changes);
+    sort($paths);
+    assertSame($paths, array_keys($got), 'one outcome per changed path');
+    foreach ($got as $status) {
+        assertTrue(in_array($status, Report::STATUSES, true), $status);
+    }
+    foreach ($r['findings'] as $f) {
+        assertNotContains('more)', $f->message);
+        assertNotContains('lib/a.php', $f->message);
+    }
+    $unexplained = array_values(array_filter($r['findings'], function ($f) { return $f->rule === 'unexplained-change'; }));
+    assertSame('2 file(s) changed without a version change (each one is listed in the report)', $unexplained[0]->message);
+});
+
+t('Analyzer: an unverified update message points to the report instead of sampling files', function () {
+    [$root, $c, $b] = wpFixture();
+    $old = VersionTracker::read($c);
+    bump($root, 'wp-content/plugins/foo/foo.php', "<?php\n/*\nPlugin Name: Foo\nVersion: 1.1\n*/\n// v2\n");
+    $r = runAnalysis($c, $b, null, $old);
+    assertSame('Version 1.0 -> 1.1, but 1 changed file(s) could not be verified against an official source (each one is listed in the report)', $r['findings'][0]->message);
+    assertSame(['wp-content/plugins/foo/foo.php' => 'reported'], $r['outcomes']);
 });

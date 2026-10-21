@@ -279,7 +279,9 @@ t('run: setup on an already infected site watches the rest, keeps the flagged fi
     clearstatcache();
     $n = count($mail->sent);
     assertSame(1, runPackaged($dir, $mail)['exit']);
-    assertContains('wp-content/themes/Avada/functions.php', implode("\n", array_column($mail->since($n), 'body')));
+    $body = implode("\n", array_column($mail->since($n), 'body'));
+    assertContains('wp-content/themes/Avada', $body);
+    assertContains('1 file(s) changed without a version change', $body); // the file itself is in the report
     runPackaged($dir, $mail, ['accept', '--path=wp-content/themes/Avada/functions.php']);
 
     // The flagged file is reported again once the daily reminder is due.

