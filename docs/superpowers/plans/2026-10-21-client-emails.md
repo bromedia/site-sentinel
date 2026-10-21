@@ -51,13 +51,13 @@
     - `$changes`: `Differ::diff()['changes']` entries (`type`, `path`, `old`, `new` records with `size`, `mtime`, `hash`, `content_same`)
     - `$outcomes`: `array<string,string>` path => status (Task 2)
   - `Report::CAP = 2097152`; `Report::attachment(string $file, int $cap = self::CAP): array{name:string, path:string, content:string}` — content cut at `$cap` bytes with the cut line from Review Focus.
-  - `Report::STATUSES` — the status strings: `reported`, `accepted: official copy`, `accepted: approved update`, `accepted: not code`, `accepted: permissions only`, `accepted: removed`, `held: judged next run`.
+  - `Report::STATUSES` — the status strings: `reported`, `accepted: official copy`, `accepted: approved update`, `accepted: not code`, `accepted: permissions only`, `accepted: removed`, `held: judged next run` (review follow-up: `pending: not saved (the record of website files could not be updated)`, used instead of any `accepted: *` when the run's save failed).
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_report.php`:
   - `Report lists every finding and every changed file, grouped, with nothing truncated`: 30 modified files in one theme plus 2 findings → report contains all 30 paths, both findings with rule, path, message, `[id …]` for dismissable ones and hash, `in this email` for due keys and `reported earlier` for the rest, group headings from `Analyzer::groupOf`, and no `more)`.
   - `Report shows each file's change type, size, time, code-file SHA-256 and status` (one `new`, `modified`, `removed`, permissions-only change; statuses from `$outcomes`; a path missing from `$outcomes` shows `reported` if it has a finding, else `accepted: not code`).
   - `Report file names are safe for any site name`: `'My Shop'` → `sentinel-report-my-shop-20261021-1430.txt`; `'Café / Bar'` → `…-caf-bar-…`; `'***'` → `…-site-…`; a 60-char name → slug of 40 chars.
-  - `Report labels a partial scan and its scope`: `complete => false` → header and changed-files heading say `part of a scan: changes found in this part only; the scan resumes on the next run`; `complete => true` → `complete scan`.
+  - `Report labels a partial scan and its scope`: `complete => false` → header and changed-files heading say `part of a scan: changes found in this part only; the scan resumes on the next run`; `complete => true` → `complete scan` (review follow-up: complete after resuming → `final part of a scan: the scan is now complete; this report covers this part only`).
   - `Report holds no absolute paths or contents`: with `root` = `/home/acct/public_html` and a note containing that root, the report contains neither `/home/acct` nor any file content, and the note shows the path relative to the website folder.
   - `Report keeps the newest 30 and cuts the attachment at the cap`: write 32 reports → 30 remain, the two oldest gone; with reports totalling over 50 MB the oldest are pruned until under it, never the newest; `attachment($file, 100)` content is ≤ 100 bytes plus the cut line naming `$file`; under the cap the content equals the file.
 - [ ] **Step 2: Run** `php tests/run.php Report` → FAIL (`Class "Sentinel\Report" not found`).

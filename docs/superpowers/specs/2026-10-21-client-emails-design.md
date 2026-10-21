@@ -48,7 +48,7 @@ Two things get in the way today:
 
 - Plain text, UTF-8, named `sentinel-report-<site-slug>-<YYYYMMDD-HHMM>.txt`.
 - Contents, in this order:
-  - header: site name, time (UTC), Sentinel version, scan mode and coverage: either `complete scan` or `part of a scan: changes found in this part only; the scan resumes on the next run`. The changed-files heading repeats that scope. No absolute paths (they contain the hosting account name);
+  - header: site name, time (UTC), Sentinel version, scan mode and coverage: `complete scan`, `part of a scan: changes found in this part only; the scan resumes on the next run`, or, for the last part of a scan that resumed across runs, `final part of a scan: the scan is now complete; this report covers this part only`. The changed-files heading repeats that scope. No absolute paths (they contain the hosting account name);
   - findings: every finding the run produced (not only the ones due for this email), grouped by severity, each with rule, path, message, dismiss id and content hash, and marked `in this email` or `reported earlier`. The email body covers only the due findings, as today;
   - changed files: **every file in the run's change list, one line each**, nothing summarised (decided: the owner asked for a full record to investigate from). Grouped by plugin/theme/folder (`Analyzer::groupOf`), each line with change type (new, modified, removed, permissions only), size, modification time, SHA-256 for code files, and a status:
     - `reported` (part of a finding),
@@ -56,6 +56,7 @@ Two things get in the way today:
     - `accepted: approved update` (an update explained under the update policy with no detection; after #10 a version change explains nothing in a plugin with an unresolved detection),
     - `accepted: not code` (uploads, images and other non-code files that changed),
     - `held: judged next run` (inside the update grace period, or retried after a scan error);
+    - `pending: not saved (the record of website files could not be updated)` replaces every `accepted: *` status when this run could not save its records, because nothing was accepted;
   - notes (scanner problems, checksums that could not be downloaded).
   `Analyzer::analyze()` will need to return per-file outcomes rather than only counts and info strings; how is left to the builder.
 - Sent with every email that has findings or changed files: alerts, and a setup email with flagged files. The plain welcome on a clean site has no report.
