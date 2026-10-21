@@ -16,7 +16,7 @@ final class Detections
     public const FILE = 'detections.json';
 
     private $state;
-    /** @var array<string,array{sha256:string,rules:string[],first:int}> path => entry */
+    /** @var array<string,array{sha256:string,rules:string[],severity:int,first:int}> path => entry */
     private $entries;
     private $changed = false;
 
@@ -28,7 +28,7 @@ final class Detections
         });
     }
 
-    /** @return array<string,array{sha256:string,rules:string[],first:int}> */
+    /** @return array<string,array{sha256:string,rules:string[],severity:int,first:int}> */
     public function all(): array
     {
         return $this->entries;
@@ -36,19 +36,19 @@ final class Detections
 
     /**
      * The latest detection on a path replaces an earlier one, so reviewing what is there now is
-     * what resolves it.
+     * what resolves it. Its severity is kept, so an unresolved Critical stays Critical.
      *
      * @param string[] $rules
      */
-    public function record(string $path, string $sha256, array $rules, int $now): void
+    public function record(string $path, string $sha256, array $rules, int $severity, int $now): void
     {
         $rules = array_values(array_unique($rules));
         sort($rules);
         $old = $this->entries[$path] ?? null;
-        if ($old !== null && $old['sha256'] === $sha256 && $old['rules'] === $rules) {
+        if ($old !== null && $old['sha256'] === $sha256 && $old['rules'] === $rules && (int)($old['severity'] ?? -1) === $severity) {
             return;
         }
-        $this->entries[$path] = ['sha256' => $sha256, 'rules' => $rules, 'first' => (int)($old['first'] ?? $now)];
+        $this->entries[$path] = ['sha256' => $sha256, 'rules' => $rules, 'severity' => $severity, 'first' => (int)($old['first'] ?? $now)];
         $this->changed = true;
     }
 

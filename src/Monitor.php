@@ -135,7 +135,7 @@ final class Monitor
         // disappeared outside this slice is said again here, keyed on what is there now.
         foreach ($a['detected'] as $path => $det) {
             if (Detections::tracked($this->config, (string)$path)) {
-                $detections->record((string)$path, (string)$det['sha256'], (array)$det['rules'], $now);
+                $detections->record((string)$path, (string)$det['sha256'], (array)$det['rules'], (int)$det['severity'], $now);
             }
         }
         foreach (array_keys($a['resolved']) as $path) {
@@ -147,6 +147,12 @@ final class Monitor
                 continue;
             }
             $abs = $this->config->abs($path);
+            // The official file can be back with nothing looking changed (same size and timestamp
+            // as the baseline), so it would never reach the checksum check of a changed file.
+            if ($wp !== null && file_exists($abs) && !$this->config->isUploads($path) && $wp->verify($path) === WpChecksum::VERIFIED) {
+                $detections->resolve($path);
+                continue;
+            }
             if (!file_exists($abs)) {
                 $findings[] = Analyzer::unresolvedFinding($path, '', $entry, 'removed');
             } elseif (($current = (string)@hash_file('sha256', $abs)) !== $entry['sha256']) {

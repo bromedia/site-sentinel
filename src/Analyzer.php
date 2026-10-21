@@ -12,7 +12,7 @@ final class Analyzer
     private $external;
     private $sensitive;
     private $dismissals;
-    /** @var array<string,array{sha256:string,rules:string[],first:int}> Detections::all() */
+    /** @var array<string,array{sha256:string,rules:string[],severity:int,first:int}> Detections::all() */
     private $unresolved;
 
     public function __construct(Config $config, PatternScanner $patterns, LocationScanner $locations, ?WpChecksum $wp, ExternalScanner $external, ?Dismissals $dismissals = null, array $unresolved = [])
@@ -31,12 +31,12 @@ final class Analyzer
      * A file reported as possible hacking that changed or disappeared before anyone reviewed the
      * report. Keyed on what is there now, so each further change alerts again.
      *
-     * @param array{sha256:string,rules:string[],first:int} $entry
+     * @param array{sha256:string,rules:string[],severity:int,first:int} $entry
      */
     public static function unresolvedFinding(string $path, string $currentHash, array $entry, string $since): Finding
     {
         return new Finding(
-            Finding::WARNING,
+            (int)($entry['severity'] ?? Finding::CRITICAL),
             $path,
             'detection-unresolved',
             sprintf(
@@ -77,7 +77,7 @@ final class Analyzer
      * @param array<string,string> $oldVersions stored plugin/theme versions
      * @param array<string,string> $newVersions versions currently on disk
      * @param int $now current unix time; with update_grace_seconds > 0, update-explainable findings for files that arrived within the grace period are deferred (held, not reported). 0 disables deferral
-     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[], detected: array<string,array{sha256:string,rules:string[]}>, resolved: array<string,bool>}
+     * @return array{findings: Finding[], info: string[], hold: array<string,bool>, version_holds: array<string,bool>, notes: string[], detected: array<string,array{sha256:string,rules:string[],severity:int}>, resolved: array<string,bool>}
      */
     public function analyze(array $changes, array $oldVersions, array $newVersions, bool $initial = false, int $now = 0): array
     {
@@ -173,8 +173,11 @@ final class Analyzer
             if ($hits) {
                 foreach ($hits as $h) {
                     $findings[] = $h;
-                    $detected[$rel]['sha256'] = $h->hash;
-                    $detected[$rel]['rules'][] = $h->rule;
+                    if (!in_array($h->rule, Digest::MONITORING, true)) { // a check that failed is retried, not remembered
+                        $detected[$rel]['sha256'] = $h->hash;
+                        $detected[$rel]['rules'][] = $h->rule;
+                        $detected[$rel]['severity'] = max((int)($detected[$rel]['severity'] ?? 0), $h->severity);
+                    }
                 }
                 $hold[$rel] = true;
                 continue;
@@ -227,8 +230,11 @@ final class Analyzer
                 }
                 $findings[] = $f;
                 $hold[$f->path] = true;
-                $detected[$f->path]['sha256'] = $f->hash;
-                $detected[$f->path]['rules'][] = $f->rule;
+                if (!in_array($f->rule, Digest::MONITORING, true)) { // a check that failed is retried, not remembered
+                    $detected[$f->path]['sha256'] = $f->hash;
+                    $detected[$f->path]['rules'][] = $f->rule;
+                    $detected[$f->path]['severity'] = max((int)($detected[$f->path]['severity'] ?? 0), $f->severity);
+                }
                 unset($pending[$f->path]);
                 foreach (array_keys($groups) as $g) {
                     unset($groups[$g][$f->path]);

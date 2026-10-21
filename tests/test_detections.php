@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-use Sentinel\{Accept, Budget, Detections, VersionTracker};
+use Sentinel\{Accept, Budget, Channel, Detections, Finding, Monitor, VersionTracker};
 
 /** A plugin with a version file and a helper, set up clean with its version recorded. */
 function laundering(array $cfg = []): array
@@ -190,4 +190,88 @@ t('Detections: files flagged at setup are remembered like any detection', functi
     $d = json_decode((string)file_get_contents($dir . '/state/' . Detections::FILE), true);
     assertSame(['wp-content/plugins/evil/evil.php'], array_keys($d));
     assertSame(['request-callable'], $d['wp-content/plugins/evil/evil.php']['rules']);
+});
+
+t('Detections: an unresolved detection keeps its original severity: Critical stays Critical, Warning stays Warning', function () {
+    $cases = [
+        'critical' => ['<?php ' . LAUNDER_PAYLOAD, 'CRITICAL'],
+        'warning' => ['<?php echo ' . str_repeat('chr(65) . ', 9) . "'';\n", 'WARNING'],
+    ];
+    foreach ($cases as $case => [$detected, $label]) {
+        [$root, $config, $state, , , $http, $clock] = laundering();
+        $critOnly = new FakeNotifier(); // a channel that hears only about Critical findings
+        $m = new Monitor($config, $state, $http, [new Channel($critOnly, Finding::CRITICAL)], [], $clock);
+        launderWrite($root, ['wp-content/plugins/evil/inc.php' => $detected]);
+        $m->run('check');
+        $heard = count($critOnly->sent);
+        launderWrite($root, ['wp-content/plugins/evil/inc.php' => '<?php ' . LAUNDER_QUIET]);
+        $r = $m->run('check');
+        assertContains("  $label wp-content/plugins/evil/inc.php detection-unresolved", implode("\n", $r['lines']), $case);
+        if ($label === 'CRITICAL') {
+            assertSame($heard + 1, count($critOnly->sent), 'the Critical-only channel hears about the rewrite');
+        }
+        // Removing the file keeps the severity too.
+        unlink($root . '/wp-content/plugins/evil/inc.php');
+        clearstatcache();
+        assertContains("  $label wp-content/plugins/evil/inc.php detection-unresolved", implode("\n", $m->run('check')['lines']), "$case: removed");
+    }
+});
+
+t('Detections: the official file restored with its original timestamp is verified and resolves it, though nothing looks changed', function () {
+    $v1 = "<?php\n/*\nPlugin Name: Foo\nVersion: 1.0\n*/\nfunction foo() {}\n";
+    [$root, $config, $state, $m, , $http] = monitorFixture(
+        ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n", 'wp-content/plugins/foo/foo.php' => $v1],
+        ['profile' => 'wordpress', 'auto_accept_unverified_updates' => true, 'update_grace_seconds' => 0]
+    );
+    $state->writeJson('versions.json', VersionTracker::read($config));
+    coreRoute($http, ['wp-includes/version.php' => "<?php\n\$wp_version = '6.4.2';\n"]);
+    $http->route('https://downloads.wordpress.org/plugin-checksums/foo/1.0.json', 200, json_encode(['files' => ['foo.php' => ['sha256' => hash('sha256', $v1)]]]));
+    $file = $root . '/wp-content/plugins/foo/foo.php';
+    $mtime = filemtime($file);
+    launderWrite($root, ['wp-content/plugins/foo/foo.php' => $v1 . LAUNDER_PAYLOAD]);
+    assertSame(1, $m->run('check')['exit']);
+    assertTrue(isset((new Detections($state))->all()['wp-content/plugins/foo/foo.php']));
+    file_put_contents($file, $v1);
+    touch($file, $mtime);
+    clearstatcache();
+    foreach (['check', 'full'] as $mode) {
+        $r = $m->run($mode);
+        assertSame(0, $r['exit'], "$mode: " . implode("\n", $r['lines']));
+    }
+    assertSame([], (new Detections($state))->all());
+});
+
+t('Detections: a rule that failed to run is retried, never remembered as a detection, and does not replace a real one', function () {
+    [$root, , $state, $m, $n] = laundering();
+    $heavy = '<?php $x = ' . str_repeat('chr(1) . ', 7) . "1;\n"; // a rule fails under the limit below, clean otherwise
+    $jit = ini_set('pcre.jit', '0');
+    $limit = ini_set('pcre.backtrack_limit', '10');
+    try {
+        launderWrite($root, ['wp-content/plugins/evil/inc.php' => $heavy]);
+        $r = $m->run('check');
+    } finally {
+        ini_set('pcre.jit', (string)$jit);
+        ini_set('pcre.backtrack_limit', (string)$limit);
+    }
+    assertContains('scan-error', implode("\n", $r['lines']), 'the failure is reported');
+    assertSame([], (new Detections($state))->all(), 'a scan error is not a detection');
+    // Scanning works again: the file is judged normally, and an update of its plugin is approved as usual.
+    launderWrite($root, ['wp-content/plugins/evil/evil.php' => launderHeader('1.1')]);
+    $r = $m->run('check');
+    assertNotContains('detection-unresolved', implode("\n", $r['lines']));
+    assertSame('1.1', $state->readJson('versions.json')['wp-content/plugins/evil'] ?? null, implode("\n", $r['lines']));
+
+    // A real detection is not replaced by a later scan error on the same file.
+    launderWrite($root, ['wp-content/plugins/evil/inc.php' => '<?php ' . LAUNDER_PAYLOAD]);
+    $m->run('check');
+    $jit = ini_set('pcre.jit', '0');
+    $limit = ini_set('pcre.backtrack_limit', '10');
+    try {
+        launderWrite($root, ['wp-content/plugins/evil/inc.php' => $heavy]);
+        $m->run('check');
+    } finally {
+        ini_set('pcre.jit', (string)$jit);
+        ini_set('pcre.backtrack_limit', (string)$limit);
+    }
+    assertSame(['request-callable'], (new Detections($state))->all()['wp-content/plugins/evil/inc.php']['rules'] ?? null);
 });

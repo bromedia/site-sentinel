@@ -97,7 +97,8 @@ final class Digest
     }
 
     /** Problems with Sentinel itself rather than with the website's files. */
-    private const MONITORING = ['run-error', 'state-write-failed', 'self-tamper', 'unreadable', 'unreadable-dir', 'scan-error'];
+    /** Findings that say a check could not run, not that something was found. */
+    public const MONITORING = ['run-error', 'state-write-failed', 'self-tamper', 'unreadable', 'unreadable-dir', 'scan-error'];
     /** Changes to review, as opposed to files that look suspicious in themselves. */
     private const CHANGES = [
         'unexplained-change', 'unverified-update', 'sensitive-file-changed', 'sensitive-file-removed',
