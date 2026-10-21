@@ -270,7 +270,8 @@ final class Config
         $c->exclude = self::strings($raw['exclude'] ?? $d['exclude']);
         $c->quietFoldersConfigured = isset($raw['quiet_folders']);
         $c->quietFolders = self::strings($raw['quiet_folders'] ?? []);
-        $c->quietChanges = (bool)($raw['quiet_changes'] ?? false);
+        // Only the boolean true: a string such as "false" or "no" must not switch quiet on.
+        $c->quietChanges = ($raw['quiet_changes'] ?? false) === true;
         $c->codeExtensions = array_map('strtolower', self::strings($raw['code_extensions'] ?? $d['code_extensions']));
         $c->sensitive = self::strings($raw['sensitive'] ?? $d['sensitive']);
         $c->uploadsDir = trim((string)($raw['uploads_dir'] ?? $d['uploads_dir']), '/');
@@ -409,7 +410,12 @@ final class Config
         return array_merge($this->profile === 'wordpress' ? [''] : [], $this->nestedWordPress);
     }
 
-    /** Whether a change at this path is recorded without an email unless something flags it. */
+    /**
+     * Whether a change at this path is recorded without an email unless something flags it.
+     * quiet_folders patterns are anchored at the website folder: "app/" is <site>/app/ only, not a
+     * folder called app inside a theme or a plugin called app (anyone who can write files could
+     * create those).
+     */
     public function isQuiet(string $rel): bool
     {
         if ($this->quietChanges) {
@@ -419,7 +425,10 @@ final class Config
             return false;
         }
         if ($this->quietFilter === null) {
-            $this->quietFilter = new PathFilter($this->quietFolders);
+            $this->quietFilter = new PathFilter(array_map(function (string $p): string {
+                $p = trim($p);
+                return $p === '' ? '' : '/' . ltrim($p, '/');
+            }, $this->quietFolders));
         }
         return $this->quietFilter->matches($rel);
     }

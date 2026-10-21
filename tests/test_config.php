@@ -195,3 +195,26 @@ t('Config: quiet from settings or quiet_folders; core paths recognised', functio
     }
     assertTrue(!makeConfig($root)->isCorePath('wp-includes/load.php'));
 });
+
+t('Config: quiet_folders patterns are anchored at the website folder, not matched anywhere', function () {
+    $root = tmpdir();
+    $c = makeConfig($root, ['profile' => 'wordpress', 'quiet_folders' => ['app/', 'lib/vendor/', '/tools/']]);
+    assertTrue($c->isQuiet('app/x.php'));
+    assertTrue($c->isQuiet('app/sub/y.php'));
+    assertTrue($c->isQuiet('lib/vendor/z.php'));
+    assertTrue($c->isQuiet('tools/t.php'));
+    foreach (['wp-content/themes/t/app/x.php', 'wp-content/plugins/app/app.php', 'shop/app/x.php', 'x/lib/vendor/z.php', 'wp-content/tools/t.php'] as $rel) {
+        assertTrue(!$c->isQuiet($rel), $rel);
+    }
+    assertSame(['app/', 'lib/vendor/', '/tools/'], $c->quietFolders, 'shown and written back as configured');
+});
+
+t('Config: quiet_changes is quiet only when it is the boolean true', function () {
+    $root = tmpdir();
+    foreach (['false', 'no', 'true', 'yes', 1, '1', 'quiet', [true]] as $value) {
+        $c = makeConfig($root, ['quiet_changes' => $value]);
+        assertSame(false, $c->quietChanges, var_export($value, true));
+        assertTrue(!$c->isQuiet('x.php'), var_export($value, true));
+    }
+    assertSame(true, makeConfig($root, ['quiet_changes' => true])->quietChanges);
+});

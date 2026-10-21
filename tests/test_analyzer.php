@@ -812,3 +812,13 @@ t('Quiet: no "accepted quietly" line while a file of the update is still being c
     assertTrue(isset($r['version_holds']['wp-content/plugins/foo']));
     assertNotContains('accepted quietly', implode("\n", $r['info']));
 });
+
+t('Quiet folders: "app/" is the app folder of the website only, not a folder of that name in a theme or a plugin called app', function () {
+    [$root, $c, $b] = wpFixture(['app/x.php' => '<?php // app', 'wp-content/themes/t/f.php' => '<?php // t'], ['quiet_folders' => ['app/']]);
+    bump($root, 'app/x.php', '<?php // app, deployed');
+    putFile($root, 'wp-content/themes/t/app/shell.php', '<?php // added to the theme');
+    putFile($root, 'wp-content/plugins/app/app.php', '<?php // a new plugin called app');
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content/plugins/app', 'unexplained-change@wp-content/themes/t'], ruleList($r));
+    assertSame(['app/x.php'], $r['quiet']);
+});
