@@ -113,3 +113,37 @@ t('Config has an update grace period that defaults to 120 seconds and can be dis
     assertSame(30, Config::fromArray(Config::fromArray($base + ['update_grace_seconds' => 30])->toArray())->updateGraceSeconds);
     assertThrows(ConfigException::class, function () use ($base) { Config::fromArray($base + ['update_grace_seconds' => -5]); });
 });
+
+t('Config::accountHome is the parent of the website folder as configured, before symlinks are resolved', function () {
+    $base = tmpdir();
+    $home = $base . '/home/clientftp';
+    $real = $base . '/www/users/clientftp';
+    mkdir($home, 0755, true);
+    mkdir($real, 0755, true);
+    symlink($real, $home . '/public_html'); // the usual: public_html is a link elsewhere
+    $write = function (string $dir, string $siteRoot): string {
+        mkdir($dir, 0755, true);
+        file_put_contents($dir . '/sentinel.json', json_encode(['site_name' => 'Shop', 'site_root' => $siteRoot, 'state_dir' => 'state']));
+        return $dir . '/sentinel.json';
+    };
+    // Standard layout: home/sentinel/ and the shipped ../public_html.
+    $c = Config::load($write($home . '/sentinel', '../public_html'));
+    assertSame($home, $c->accountHome);
+    assertSame(realpath($real), $c->siteRoot, 'the website folder itself is still resolved');
+    // Extra folder: home/site-sentinel/sentinel/ falls back to ../../public_html.
+    $c = Config::load($write($home . '/site-sentinel/sentinel', '../public_html'));
+    assertSame(true, $c->siteRootFoundHigher);
+    assertSame($home, $c->accountHome);
+    // An absolute setting.
+    $c = Config::load($write($base . '/elsewhere/sentinel', $home . '/public_html'));
+    assertSame($home, $c->accountHome);
+    $c = Config::fromArray(['site_name' => 'x', 'site_root' => $home . '/public_html/', 'state_dir' => $base . '/s']);
+    assertSame($home, $c->accountHome, 'also when built from an array, trailing slash or not');
+    // Dot segments are read by name; a website folder at the top has no known home.
+    $c = Config::fromArray(['site_name' => 'x', 'site_root' => $home . '/sentinel/../public_html', 'state_dir' => $base . '/s']);
+    assertSame($home, $c->accountHome);
+    assertSame('', Config::accountHomeFor('/anywhere', '/'));
+    assertSame('', Config::accountHomeFor('/anywhere', '/public_html'));
+    assertSame('', Config::accountHomeFor('/anywhere', ''));
+    assertSame('/h/a', Config::accountHomeFor('/h/a/sentinel', '../public_html'), 'by name, even if nothing is there');
+});

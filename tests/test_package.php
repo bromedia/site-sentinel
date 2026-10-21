@@ -1190,6 +1190,46 @@ t('run: the setup welcome\'s developer notes name a symlinked folder\'s target r
     }
 });
 
+t('run: with the package in an extra folder and a symlink to an account-level folder, nothing sent holds an absolute path', function () {
+    // home/site-sentinel/sentinel/ is the sentinel folder; the website's 'media' link points at
+    // home/shared-media, which is outside the sentinel tree but inside the account.
+    [$home, $www, $dir] = packagedSite(['wp-content/uploads/x.php' => '<?php eval($_POST["c"]);']);
+    mkdir($home . '/site-sentinel');
+    rename($dir, $home . '/site-sentinel/sentinel');
+    $dir = $home . '/site-sentinel/sentinel';
+    mkdir($home . '/shared-media');
+    symlink($home . '/shared-media', $www . '/media');
+    $mail = new MailBox();
+    $r = runPackaged($dir, $mail);
+    assertSame(1, $r['exit'], $r['text']);
+    $body = $mail->sent[0]['body'];
+    $att = $mail->attachment(0);
+    assertTrue($att !== null, 'the flagged file makes setup send the report too');
+    assertContains("'media' is a symlink to a directory (shared-media)", $body, 'the note shows the target relative to the account');
+    assertContains("'media' is a symlink to a directory (shared-media)", $att['content'], 'and so does the report');
+    assertContains('wp-content/uploads/x.php', $att['content']);
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir, (string)realpath($dir)] as $abs) {
+        assertNotContains($abs, $mail->sent[0]['subject'] . $body, 'an absolute path was sent in the email');
+        assertNotContains($abs, $att['content'], 'an absolute path is in the report');
+    }
+    assertNotContains('clientftp', $body . $att['content'], 'the account name is nowhere');
+    // The report kept on the server is the one sent: clean too.
+    assertNotContains($home, (string)file_get_contents($dir . '/state/reports/' . $att['name']));
+
+    // Later alerts are clean as well.
+    putFile($www, 'wp-content/themes/Avada/functions.php', '<?php // changed');
+    touch($www . '/wp-content/themes/Avada/functions.php', time() + 5);
+    clearstatcache();
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    foreach ($mail->since($n) as $i => $m) {
+        $sent = $m['subject'] . $m['body'] . (string)($mail->attachment($n + $i)['content'] ?? '');
+        foreach ([$home, (string)realpath($home)] as $abs) {
+            assertNotContains($abs, $sent, 'an absolute path was sent by a later alert');
+        }
+    }
+});
+
 t('run: the records-missing email names the baseline file relative to the home folder', function () {
     [$home, $www, $dir] = packagedSite();
     $mail = new MailBox();

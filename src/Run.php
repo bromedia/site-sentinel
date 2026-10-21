@@ -223,7 +223,7 @@ final class Run
                 try {
                     $pending['report'] = Report::write(
                         $state->path('reports'),
-                        ['site' => $site, 'root' => $config->siteRoot, 'home' => dirname(dirname($state->dir())), 'ts' => $now, 'version' => VERSION, 'mode' => 'setup', 'complete' => true, 'nested' => $config->nestedWordPress],
+                        ['site' => $site, 'root' => $config->siteRoot, 'home' => $config->accountHome, 'folders' => [dirname(dirname($state->dir()))], 'ts' => $now, 'version' => VERSION, 'mode' => 'setup', 'complete' => true, 'nested' => $config->nestedWordPress],
                         $scan['findings'],
                         array_map(function (Finding $f): string {
                             return $f->key();
@@ -604,7 +604,7 @@ final class Run
     /** Nothing sent shows the hosting account's absolute paths (they contain its name). */
     private static function scrubber(Config $config, State $state): callable
     {
-        return Report::pathScrubber($config->siteRoot, dirname(dirname($state->dir())));
+        return Report::pathScrubber($config->siteRoot, $config->accountHome, dirname(dirname($state->dir())));
     }
 
     /** @param string[] $lines */

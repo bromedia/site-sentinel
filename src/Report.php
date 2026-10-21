@@ -60,9 +60,10 @@ final class Report
      * minute is already there: never overwritten, never written through a planted link) and
      * prunes older copies.
      *
-     * @param array{site:string, root:string, ts:int, version:string, mode:string, complete:bool, resumed?:bool, nested?:string[], home?:string} $meta
-     *        root (the website folder) and home (the folder holding the sentinel folder) are only used
-     *        to turn absolute paths in any line into relative ones
+     * @param array{site:string, root:string, ts:int, version:string, mode:string, complete:bool, resumed?:bool, nested?:string[], home?:string, folders?:string[]} $meta
+     *        root (the website folder), home (the account's home) and folders (more folders to clean,
+     *        such as the one holding the sentinel folder) are only used to turn absolute paths in any
+     *        line into relative ones
      * @param Finding[] $findings every finding of the run
      * @param string[] $dueKeys Finding::key() of the findings in this email
      * @param array[] $changes Differ::diff()['changes']
@@ -127,7 +128,7 @@ final class Report
     /** @param resource $fh */
     private static function stream($fh, array $meta, array $findings, array $due, array $changes, array $outcomes, array $notes): void
     {
-        $scrub = self::pathScrubber((string)($meta['root'] ?? ''), (string)($meta['home'] ?? ''));
+        $scrub = self::pathScrubber((string)($meta['root'] ?? ''), (string)($meta['home'] ?? ''), ...array_map('strval', (array)($meta['folders'] ?? [])));
         $put = function (string $line) use ($fh, $scrub): void {
             self::writeAll($fh, Finding::line($scrub($line)) . "\n");
         };
@@ -244,13 +245,28 @@ final class Report
      *
      * @return callable(string): string
      */
-    public static function pathScrubber(string $root, string $home): callable
+    public static function pathScrubber(string $root, string $home, string ...$more): callable
     {
         $map = [];
-        foreach ([[$home, '~'], [$root, '.']] as [$dir, $bare]) { // the website folder wins a tie
+        $candidates = [[$home, '~'], [$root, '.']]; // the website folder wins a tie
+        foreach ($more as $dir) {
+            $candidates[] = [$dir, '~'];
+        }
+        foreach ($candidates as $n => [$dir, $bare]) {
             foreach ([$dir, $dir !== '' ? (string)realpath($dir) : ''] as $d) {
                 $d = rtrim($d, '/');
-                if ($d !== '' && $d[0] === '/') {
+                if ($d === '' || $d[0] !== '/') {
+                    continue;
+                }
+                // An extra folder inside one already known adds nothing, and would shorten
+                // "site-sentinel/sentinel/x" to "sentinel/x".
+                $inside = false;
+                if ($n >= 2) {
+                    foreach ($map as $known => $unused) {
+                        $inside = $inside || strpos($d . '/', (string)$known . '/') === 0;
+                    }
+                }
+                if (!$inside) {
                     $map[$d] = $bare;
                 }
             }

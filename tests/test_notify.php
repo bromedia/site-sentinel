@@ -339,3 +339,13 @@ t('Report::pathScrubber is the report\'s rule: home and website folder become re
     $slash = \Sentinel\Report::pathScrubber('/', '/');
     assertSame('/h/a/x', $slash('/h/a/x'));
 });
+
+t('Report::pathScrubber also cleans extra folders, but never shortens a path inside a folder it already cleans', function () {
+    $s = \Sentinel\Report::pathScrubber('/h/a/public_html', '/h/a', '/h/a/site-sentinel');
+    assertSame('site-sentinel/sentinel/x', $s('/h/a/site-sentinel/sentinel/x'), 'inside the home: kept whole');
+    assertSame('shared-media', $s('/h/a/shared-media'));
+    $apart = \Sentinel\Report::pathScrubber('/h/a/public_html', '/h/a', '/opt/tools', '', 'relative/x', '/');
+    assertSame('sentinel/x', $apart('/opt/tools/sentinel/x'), 'a sentinel folder apart from the account is cleaned too');
+    assertSame('shared-media', $apart('/h/a/shared-media'));
+    assertSame('/elsewhere/x', $apart('/elsewhere/x'));
+});

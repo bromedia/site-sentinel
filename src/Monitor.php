@@ -248,7 +248,8 @@ final class Monitor
                     [
                         'site' => $this->config->siteName,
                         'root' => $this->config->siteRoot,
-                        'home' => $this->home(),
+                        'home' => $this->config->accountHome,
+                        'folders' => [$this->sentinelParent()],
                         'ts' => $now,
                         'version' => VERSION,
                         'mode' => $mode,
@@ -358,8 +359,8 @@ final class Monitor
         return trim(Finding::line($text));
     }
 
-    /** The folder holding the sentinel folder. */
-    private function home(): string
+    /** The folder holding the sentinel folder (the account home, unless the folders are laid out differently). */
+    private function sentinelParent(): string
     {
         return dirname(dirname($this->state->dir()));
     }
@@ -367,7 +368,7 @@ final class Monitor
     /** Nothing sent shows the hosting account's absolute paths (they contain its name). */
     private function scrubber(): callable
     {
-        return Report::pathScrubber($this->config->siteRoot, $this->home());
+        return Report::pathScrubber($this->config->siteRoot, $this->config->accountHome, $this->sentinelParent());
     }
 
     private function failed(\Throwable $e): array
