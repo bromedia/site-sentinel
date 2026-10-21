@@ -289,3 +289,53 @@ t('EmailNotifier sends the attached-wording body only with the attachment; other
     (new NtfyNotifier('https://ntfy.example/topic', $http))->send('S', 'the body', Finding::WARNING, $att);
     assertNotContains('It is attached.', $http->calls[0][2]);
 });
+
+t('Alerter with a scrubber cleans the subject, body and both attachment texts; without one nothing changes', function () {
+    $att = ['name' => 'r.txt', 'path' => 'state/reports/r.txt', 'content' => "at /h/a/x\n", 'body' => 'attached /h/a/y'];
+    $plain = new FakeNotifier('plain');
+    (new Alerter([new Channel($plain, Finding::WARNING)]))->send('S /h/a/s', 'B /h/a/b', Finding::WARNING, $att);
+    assertSame('S /h/a/s', $plain->sent[0]['subject']);
+    assertSame('B /h/a/b', $plain->sent[0]['body']);
+    assertSame($att, $plain->sent[0]['attachment'], 'byte-identical without a scrubber');
+
+    $scrub = function (string $s): string {
+        return str_replace('/h/a/', '', $s);
+    };
+    $n = new FakeNotifier('scrubbed');
+    (new Alerter([new Channel($n, Finding::WARNING)], $scrub))->send('S /h/a/s', 'B /h/a/b', Finding::WARNING, $att);
+    assertSame('S s', $n->sent[0]['subject']);
+    assertSame('B b', $n->sent[0]['body']);
+    assertSame(['name' => 'r.txt', 'path' => 'state/reports/r.txt', 'content' => "at x\n", 'body' => 'attached y'], $n->sent[0]['attachment']);
+    (new Alerter([new Channel($n, Finding::WARNING)], $scrub))->send('S', 'B /h/a/b', Finding::WARNING);
+    assertSame(null, $n->sent[1]['attachment']);
+    // an attachment without the alternative body gets none invented
+    (new Alerter([new Channel($n, Finding::WARNING)], $scrub))->send('S', 'B', Finding::WARNING, ['name' => 'r', 'path' => 'p', 'content' => 'c /h/a/z']);
+    assertSame(['name' => 'r', 'path' => 'p', 'content' => 'c z'], $n->sent[2]['attachment']);
+});
+
+t('Alerter: a scrubber that throws or returns nothing never costs the alert; it goes out unscrubbed', function () {
+    $n = new FakeNotifier();
+    (new Alerter([new Channel($n, Finding::WARNING)], function (string $s): string {
+        throw new RuntimeException('boom');
+    }))->send('S', 'B', Finding::WARNING, ['name' => 'r', 'path' => 'p', 'content' => 'c']);
+    (new Alerter([new Channel($n, Finding::WARNING)], function (string $s): string {
+        return '';
+    }))->send('S2', 'B2', Finding::WARNING);
+    assertSame(['S', 'B', 'S2', 'B2'], [$n->sent[0]['subject'], $n->sent[0]['body'], $n->sent[1]['subject'], $n->sent[1]['body']]);
+    assertSame('c', $n->sent[0]['attachment']['content']);
+});
+
+t('Report::pathScrubber is the report\'s rule: home and website folder become relative, siblings are left alone, empty values are safe', function () {
+    $s = \Sentinel\Report::pathScrubber('/h/a/public_html', '/h/a');
+    assertSame('sentinel/sentinel.php', $s('/h/a/sentinel/sentinel.php'));
+    assertSame('index.php', $s('/h/a/public_html/index.php'));
+    assertSame('.', $s('/h/a/public_html'));
+    assertSame('public_html_old/x', $s('/h/a/public_html_old/x'), 'a sibling of the website folder is not mangled into the website folder');
+    assertSame('see /elsewhere/x', $s('see /elsewhere/x'));
+    $noRoot = \Sentinel\Report::pathScrubber('', '/h/a');
+    assertSame('public_html/x', $noRoot('/h/a/public_html/x'));
+    $none = \Sentinel\Report::pathScrubber('', '');
+    assertSame('/h/a/x', $none('/h/a/x'));
+    $slash = \Sentinel\Report::pathScrubber('/', '/');
+    assertSame('/h/a/x', $slash('/h/a/x'));
+});

@@ -379,6 +379,8 @@ t('run: setup refuses to start inside the web root, and says so once a day, not 
     assertSame(['Site Sentinel setup could not finish on your website'], $mail->subjects());
     assertContains('inside the public website folder', $mail->sent[0]['body']);
     assertContains('next to public_html', $mail->sent[0]['body']);
+    assertNotContains($www, $mail->sent[0]['body'], 'the website folder is not shown by its absolute path');
+    assertNotContains((string)realpath($www), $mail->sent[0]['body']);
     runPackaged($dir, $mail);
     assertSame(1, count($mail->sent), 'not repeated every run');
     // And a config that does reach the web root from there is refused by the setup itself.
@@ -387,6 +389,8 @@ t('run: setup refuses to start inside the web root, and says so once a day, not 
     assertSame(2, $r['exit']);
     assertContains('inside the public website folder', $r['text']);
     assertSame('Site Sentinel setup could not finish on My website', end($mail->sent)['subject']);
+    assertNotContains($www, end($mail->sent)['body'], 'nor in the email sent after the config was read');
+    assertNotContains((string)realpath($www), end($mail->sent)['body']);
     assertTrue(!is_file($dir . '/state/baseline.txt'));
 });
 
@@ -1170,5 +1174,33 @@ t('run: a report about Sentinel\'s own files names them relative to the home fol
     assertContains('(sentinel/sentinel.php)', $att['content'], 'relative to the home folder');
     foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
         assertNotContains($abs, $att['content'], 'no absolute path in the report');
+    }
+});
+
+t('run: the setup welcome\'s developer notes name a symlinked folder\'s target relative to the home folder', function () {
+    [$home, $www, $dir] = packagedSite();
+    mkdir($home . '/shared-media');
+    symlink($home . '/shared-media', $www . '/media');
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $body = $mail->sent[0]['body'];
+    assertContains("'media' is a symlink to a directory (shared-media)", $body, 'the note is still there, with a relative target');
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
+        assertNotContains($abs, $mail->sent[0]['subject'] . $body, 'an absolute path was sent');
+    }
+});
+
+t('run: the records-missing email names the baseline file relative to the home folder', function () {
+    [$home, $www, $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    unlink($dir . '/state/baseline.txt');
+    $n = count($mail->sent);
+    runPackaged($dir, $mail);
+    $body = end($mail->sent)['body'];
+    assertTrue(count($mail->sent) > $n, 'the alert was sent');
+    assertContains('sentinel/state/baseline.txt is missing', $body);
+    foreach ([$home, (string)realpath($home), $www, (string)realpath($www), $dir] as $abs) {
+        assertNotContains($abs, $body, 'an absolute path was sent');
     }
 });

@@ -45,7 +45,7 @@ final class Run
             @unlink($marker); // e.g. the package was extracted again over a working install
         }
 
-        $welcome = self::sendWelcome($state, $channels);
+        $welcome = self::sendWelcome($config, $state, $channels);
         $lines = $welcome['lines'];
         if ($config->settingsProblem !== '') {
             $lines = array_merge($lines, self::settingsProblem($config, $state, $channels, $mailer, $clock()));
@@ -71,7 +71,7 @@ final class Run
      * @param Channel[] $channels
      * @return array{ok:bool, lines:string[]}
      */
-    private static function sendWelcome(State $state, array $channels): array
+    private static function sendWelcome(Config $config, State $state, array $channels): array
     {
         $w = $state->readJson(self::WELCOME);
         if (!isset($w['subject'], $w['body'])) {
@@ -95,7 +95,7 @@ final class Run
                 $body = self::withNote($body, 'The full report could not be attached.');
             }
         }
-        $r = (new Alerter($channels))->send((string)$w['subject'], $body, Finding::CRITICAL, $attachment);
+        $r = (new Alerter($channels, self::scrubber($config, $state)))->send((string)$w['subject'], $body, Finding::CRITICAL, $attachment);
         $ok = $r['attempted'] > 0 && strpos(implode("\n", $r['results']), 'FAILED') === false;
         if ($ok) {
             @unlink($state->path(self::WELCOME));
@@ -164,7 +164,9 @@ final class Run
             }
             if ($inside) {
                 $msg = self::placementMessage($config->siteRoot);
-                self::alertOnce($state, $channels, $now, 'setup-placement', "Site Sentinel setup could not finish on $site", self::text(self::withFooter(['Site Sentinel was not started.', '', $msg, '', "Please forward this email to $who."], $config->contact)));
+                // The email names the folder as the owner knows it, never by its absolute path.
+                $shown = self::placementMessage($config->siteFolderLabel());
+                self::alertOnce($config, $state, $channels, $now, 'setup-placement', "Site Sentinel setup could not finish on $site", self::text(self::withFooter(['Site Sentinel was not started.', '', $shown, '', "Please forward this email to $who."], $config->contact)));
                 return ['exit' => 2, 'lines' => ['setup failed: ' . $msg]];
             }
 
@@ -238,7 +240,7 @@ final class Run
                 }
             }
             $state->writeJson(self::WELCOME, $pending);
-            $w = self::sendWelcome($state, $channels);
+            $w = self::sendWelcome($config, $state, $channels);
             // Recorded as reported, so "dismiss <id>" works from this email and the daily reminders
             // start from now. If the email did not go out, the next check alerts them itself.
             (new AlertLog($state))->commit($scan['findings'], $w['ok'] ? $scan['findings'] : [], $now);
@@ -447,7 +449,7 @@ final class Run
             if ($removed) {
                 $notify[] = new Channel(new EmailNotifier($removed, (string)($new['from'] ?? ''), $mailer), Finding::INFO);
             }
-            $r = (new Alerter($notify))->send("Site Sentinel settings changed for $site", self::text(self::withFooter($body, $contact)), Finding::CRITICAL);
+            $r = (new Alerter($notify, self::scrubber($config, $state)))->send("Site Sentinel settings changed for $site", self::text(self::withFooter($body, $contact)), Finding::CRITICAL);
             $delivered = $r['attempted'] > 0 && strpos(implode("\n", $r['results']), 'FAILED') === false;
             if ($delivered) {
                 $check->trust('settings');
@@ -493,7 +495,7 @@ final class Run
             'changes made in settings.txt have no effect.',
         ];
         $body = self::withFooter($body, $config->contact);
-        self::alertOnce($state, $channels, $now, 'settings-problem:' . $config->settingsProblem, "Site Sentinel settings problem on $site", self::text($body));
+        self::alertOnce($config, $state, $channels, $now, 'settings-problem:' . $config->settingsProblem, "Site Sentinel settings problem on $site", self::text($body));
         return ['settings problem: ' . $config->settingsProblem . ' (using the last settings that worked)'];
     }
 
@@ -519,7 +521,7 @@ final class Run
             '  Sentinel will not set itself up again over an earlier install. To start from scratch, check',
             '  the site, delete the whole state folder and create ' . self::MARKER . ' next to sentinel.php.',
         ]);
-        self::alertOnce($state, $channels, $now, 'records-missing', "Security alert: Site Sentinel's records were removed on $site", self::text($body));
+        self::alertOnce($config, $state, $channels, $now, 'records-missing', "Security alert: Site Sentinel's records were removed on $site", self::text($body));
         return ['exit' => 2, 'lines' => ['error: the baseline is missing on a site that was set up before; see the alert email']];
     }
 
@@ -599,6 +601,12 @@ final class Run
         return trim(Finding::line($text));
     }
 
+    /** Nothing sent shows the hosting account's absolute paths (they contain its name). */
+    private static function scrubber(Config $config, State $state): callable
+    {
+        return Report::pathScrubber($config->siteRoot, dirname(dirname($state->dir())));
+    }
+
     /** @param string[] $lines */
     private static function text(array $lines): string
     {
@@ -606,7 +614,7 @@ final class Run
     }
 
     /** Sends a setup problem once a day at most, not on every scheduled run. */
-    private static function alertOnce(State $state, array $channels, int $now, string $key, string $subject, string $body): void
+    private static function alertOnce(Config $config, State $state, array $channels, int $now, string $key, string $subject, string $body): void
     {
         $f = new Finding(Finding::CRITICAL, 'sentinel', 'setup', $subject, sha1($key));
         $log = new AlertLog($state);
@@ -614,7 +622,7 @@ final class Run
             $log->commit([$f], [], $now);
             return;
         }
-        $r = (new Alerter($channels))->send($subject, Finding::shown($body), Finding::CRITICAL);
+        $r = (new Alerter($channels, self::scrubber($config, $state)))->send($subject, Finding::shown($body), Finding::CRITICAL);
         $log->commit([$f], $r['ok'] ? [$f] : [], $now);
     }
 }

@@ -578,3 +578,63 @@ t('Monitor: a report saved but not attachable is said to be on the server, not "
     assertNotContains('attached report', $body);
     assertNotContains($state->dir(), $body, 'the server path is relative');
 });
+
+/**
+ * A site laid out like a hosting account: <home>/public_html, <home>/sentinel/state and the
+ * script at <home>/sentinel/sentinel.php, with a client or technical audience.
+ *
+ * @return array{0:string,1:string,2:\Sentinel\Config,3:State,4:Monitor,5:FakeNotifier,6:string}
+ */
+function accountFixture(string $audience): array
+{
+    $home = tmpdir() . '/home/clientftp';
+    $root = $home . '/public_html';
+    putFile($root, 'index.php', '<?php');
+    $script = putFile($home . '/sentinel', 'sentinel.php', '<?php // v1');
+    $config = \Sentinel\Config::fromArray([
+        'site_name' => 'test',
+        'site_root' => $root,
+        'state_dir' => $home . '/sentinel/state',
+        'profile' => 'generic',
+        'audience' => $audience,
+        'contact' => 'Bro Media (info@bromedia.example)',
+        'update_grace_seconds' => 0,
+        'channels' => [['type' => 'file', 'path' => $home . '/sentinel/state/alerts.log']],
+    ]);
+    $state = new State($config->stateDir);
+    snapshot($config, $state->path('baseline.txt'));
+    $self = ['script' => (string)realpath($script)];
+    (new \Sentinel\SelfCheck($state, $self))->record();
+    $n = new FakeNotifier();
+    $m = new Monitor($config, $state, new FakeHttp(), [new Channel($n, Finding::WARNING)], $self, new FakeClock());
+    return [$home, $root, $config, $state, $m, $n, $script];
+}
+
+t('Monitor: no alert, client or technical, shows the account\'s absolute paths, whatever a finding says', function () {
+    foreach (['client', 'technical'] as $audience) {
+        [$home, $root, , $state, $m, $n, $script] = accountFixture($audience);
+        $f = $state->path('baseline.txt');
+        if (!failNextWrite($f)) {
+            skip('/dev/full or symlinks unavailable');
+        }
+        putFile($root, 'notes.txt', 'new file'); // a change that must be written to the baseline
+        file_put_contents($script, '<?php // v2, changed');
+        assertSame(1, $m->run('check')['exit']);
+        $sent = $n->sent[0];
+        $everything = $sent['subject'] . "\n" . $sent['body'] . "\n" . (string)($sent['attachment']['body'] ?? '') . (string)($sent['attachment']['content'] ?? '');
+        assertContains('self-tamper', $sent['body'], $audience);
+        assertContains('state-write-failed', $sent['body'], $audience);
+        assertContains('sentinel/sentinel.php', $sent['body'], "$audience: the script is shown relative to the home folder");
+        assertContains('sentinel/state/baseline.txt.tmp', $sent['body'], "$audience: so is the state file");
+        foreach ([$home, (string)realpath($home), $root, (string)realpath($root)] as $abs) {
+            assertNotContains($abs, $everything, "$audience: an absolute path was sent");
+        }
+    }
+});
+
+t('Monitor: the error alert for a failed run shows no absolute path either', function () {
+    [$home, , , , $m, $n] = accountFixture('client');
+    $m->reportError('cannot read ' . $home . '/sentinel/state/status.json');
+    assertContains('sentinel/state/status.json', $n->sent[0]['body']);
+    assertNotContains($home, $n->sent[0]['subject'] . $n->sent[0]['body']);
+});

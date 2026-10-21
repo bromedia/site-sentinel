@@ -246,7 +246,7 @@ final class Monitor
                     [
                         'site' => $this->config->siteName,
                         'root' => $this->config->siteRoot,
-                        'home' => dirname(dirname($this->state->dir())), // the folder holding the sentinel folder
+                        'home' => $this->home(),
                         'ts' => $now,
                         'version' => VERSION,
                         'mode' => $mode,
@@ -281,7 +281,7 @@ final class Monitor
                 // other channel, and an email sent without the file after all, uses the plain body.
                 $attachment['body'] = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes'], $attachment['name'])['body'];
             }
-            $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top'], $attachment);
+            $r = (new Alerter($this->channels, $this->scrubber()))->send($digest['subject'], $digest['body'], $digest['top'], $attachment);
             foreach ($r['results'] as $line) {
                 $alertLines[] = 'alert ' . $line;
             }
@@ -344,6 +344,18 @@ final class Monitor
         return trim(Finding::line($text));
     }
 
+    /** The folder holding the sentinel folder. */
+    private function home(): string
+    {
+        return dirname(dirname($this->state->dir()));
+    }
+
+    /** Nothing sent shows the hosting account's absolute paths (they contain its name). */
+    private function scrubber(): callable
+    {
+        return Report::pathScrubber($this->config->siteRoot, $this->home());
+    }
+
     private function failed(\Throwable $e): array
     {
         return ['exit' => 2, 'lines' => array_merge(['error: ' . $e->getMessage()], $this->reportError($e->getMessage()))];
@@ -365,7 +377,7 @@ final class Monitor
             $sent = [];
             if ($due) {
                 $digest = Digest::forConfig($this->config, $now, $due, [], []);
-                $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
+                $r = (new Alerter($this->channels, $this->scrubber()))->send($digest['subject'], $digest['body'], $digest['top']);
                 foreach ($r['results'] as $line) {
                     $lines[] = 'alert ' . $line;
                 }

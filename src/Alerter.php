@@ -8,15 +8,53 @@ final class Alerter
     /** @var Channel[] */
     private $channels;
 
-    /** @param Channel[] $channels */
-    public function __construct(array $channels)
+    /** @var callable|null */
+    private $scrub;
+
+    /**
+     * @param Channel[] $channels
+     * @param callable|null $scrub Applied to the subject, the body and the attachment's texts
+     *                             before they are sent (see Report::pathScrubber)
+     */
+    public function __construct(array $channels, ?callable $scrub = null)
     {
         $this->channels = $channels;
+        $this->scrub = $scrub;
+    }
+
+    private function clean(string $text): string
+    {
+        return self::scrubbed($this->scrub, $text);
+    }
+
+    /** The text cleaned by the scrubber; if that fails in any way, as it was: an alert is never lost to it. */
+    public static function scrubbed(?callable $scrub, string $text): string
+    {
+        if ($scrub === null || $text === '') {
+            return $text;
+        }
+        try {
+            $r = $scrub($text);
+            return is_string($r) && $r !== '' ? $r : $text;
+        } catch (\Throwable $e) {
+            return $text;
+        }
     }
 
     /** @return array{ok: bool, results: string[], attempted: int} */
     public function send(string $subject, string $body, int $topSeverity, ?array $attachment = null): array
     {
+        if ($this->scrub !== null) {
+            $subject = $this->clean($subject);
+            $body = $this->clean($body);
+            if ($attachment !== null) {
+                foreach (['content', 'body'] as $key) {
+                    if (isset($attachment[$key])) {
+                        $attachment[$key] = $this->clean((string)$attachment[$key]);
+                    }
+                }
+            }
+        }
         $results = [];
         $attempted = 0;
         $succeeded = 0;

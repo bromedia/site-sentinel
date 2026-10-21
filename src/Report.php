@@ -100,7 +100,7 @@ final class Report
     /** @param resource $fh */
     private static function stream($fh, array $meta, array $findings, array $due, array $changes, array $outcomes, array $notes): void
     {
-        $scrub = self::scrubber((string)($meta['root'] ?? ''), (string)($meta['home'] ?? ''));
+        $scrub = self::pathScrubber((string)($meta['root'] ?? ''), (string)($meta['home'] ?? ''));
         $put = function (string $line) use ($fh, $scrub): void {
             if (@fwrite($fh, Finding::line($scrub($line)) . "\n") === false) {
                 throw new \RuntimeException('cannot write report');
@@ -213,11 +213,11 @@ final class Report
      * Turns the absolute paths of the website folder and of the account's home (as given and as
      * resolved through links) into relative ones: "<root>/x" becomes "x" and "<home>/sentinel/x"
      * becomes "sentinel/x". Only the exact folder matches, so "<root>_old" is left alone; a folder
-     * that is the file system root is never used.
+     * that is the file system root is never used. Used for the report and for everything sent.
      *
      * @return callable(string): string
      */
-    private static function scrubber(string $root, string $home): callable
+    public static function pathScrubber(string $root, string $home): callable
     {
         $map = [];
         foreach ([[$home, '~'], [$root, '.']] as [$dir, $bare]) { // the website folder wins a tie
