@@ -26,7 +26,11 @@ final class Report
         'accepted: permissions only',
         'accepted: removed',
         'held: judged next run',
+        self::UNSAVED,
     ];
+
+    /** What an accepted change becomes when the record of website files could not be saved. */
+    public const UNSAVED = 'pending: not saved (the record of website files could not be updated)';
 
     private const PARTIAL = 'part of a scan: changes found in this part only; the scan resumes on the next run';
     private const COMPLETE = 'complete scan';

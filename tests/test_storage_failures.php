@@ -108,3 +108,41 @@ t('Monitor still alerts findings when the baseline cannot be saved, keeps it int
     assertContains("notes.txt\t9\t", (string)file_get_contents($f));
     assertNotContains('evil.php', (string)file_get_contents($f));
 });
+
+function reportLineFor(array $sent, string $path): string
+{
+    foreach (explode("\n", (string)($sent['attachment']['content'] ?? '')) as $l) {
+        if (preg_match('/\] ' . preg_quote($path, '/') . '$/', $l)) { // a changed-files line, not a finding
+            return $l;
+        }
+    }
+    return '';
+}
+
+t('Report: a change is labelled accepted only when the baseline was saved; a failed save says pending', function () {
+    // Control: the save works, so the clean change is accepted.
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'notes.txt' => 'v1']);
+    putFile($root, 'evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    putFile($root, 'notes.txt', 'version 2');
+    $m->run('check');
+    assertSame(1, count($n->sent));
+    assertContains('[accepted: not code] notes.txt', reportLineFor($n->sent[0], 'notes.txt'));
+    assertNotContains('state-write-failed', (string)$n->sent[0]['attachment']['content']);
+
+    // The save fails: nothing was accepted, and the report must not say it was.
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'notes.txt' => 'v1']);
+    $f = $state->path('baseline.txt');
+    putFile($root, 'evil.php', '<?php // SENTINEL-TEST-MALWARE-MARKER');
+    putFile($root, 'notes.txt', 'version 2');
+    if (!failNextWrite($f)) {
+        skip('/dev/full or symlinks unavailable');
+    }
+    $m->run('check');
+    assertSame(1, count($n->sent));
+    $text = (string)$n->sent[0]['attachment']['content'];
+    assertContains('state-write-failed', $text);
+    assertContains('[pending: not saved (the record of website files could not be updated)] notes.txt', reportLineFor($n->sent[0], 'notes.txt'));
+    assertNotContains('accepted:', $text, 'nothing is accepted when the record could not be saved');
+    assertNotContains('accepted', reportLineFor($n->sent[0], 'evil.php'));
+    assertTrue(reportLineFor($n->sent[0], 'evil.php') !== '', 'the flagged file is listed');
+});

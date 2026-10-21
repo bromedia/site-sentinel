@@ -173,6 +173,7 @@ final class Monitor
         // Saving state must not stop this run's findings from being alerted: a full disk
         // is exactly when something may be wrong. The baseline is saved first and the
         // cursor only advances after it, so a failed save means this slice is rescanned.
+        $saveFailed = false;
         try {
             if ($updates) {
                 Baseline::applyUpdates($baselineFile, $updates, $baselineFile);
@@ -221,6 +222,7 @@ final class Monitor
                 $this->state->writeJson('versions.json', $store);
             }
         } catch (\Throwable $e) {
+            $saveFailed = true;
             $findings[] = new Finding(
                 Finding::CRITICAL,
                 'sentinel',
@@ -258,7 +260,7 @@ final class Monitor
                         return $f->key();
                     }, $due),
                     $d['changes'],
-                    $a['outcomes'],
+                    $saveFailed ? self::unsaved($a['outcomes']) : $a['outcomes'],
                     $a['notes']
                 );
             } catch (\Throwable $e) {
@@ -335,6 +337,17 @@ final class Monitor
             }
         }
         return ['exit' => ($crit + $warn) > 0 ? 1 : 0, 'lines' => $lines];
+    }
+
+    /** When the baseline could not be saved nothing was accepted: every "accepted" outcome becomes "pending". */
+    private static function unsaved(array $outcomes): array
+    {
+        foreach ($outcomes as $path => $status) {
+            if (strpos((string)$status, 'accepted: ') === 0) {
+                $outcomes[$path] = Report::UNSAVED;
+            }
+        }
+        return $outcomes;
     }
 
     /** The reason an exception gives, without the account's absolute paths. */
