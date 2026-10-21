@@ -28,6 +28,8 @@ final class Settings
     /** @var bool|null null when the line is absent */
     public $approveUpdates = null;
     public $heartbeat = '';
+    /** @var bool|null changed_files: true = quiet, false = tell me; null when the line is absent */
+    public $quietChanges = null;
     /** Sender address for alert emails; '' lets PHP's mail() decide. */
     public $from = '';
 
@@ -98,6 +100,16 @@ final class Settings
                         $errors[] = "line $n: approve_plugin_updates_automatically must be yes or no";
                     }
                     break;
+                case 'changed_files':
+                    $v = strtolower($value);
+                    if (in_array($v, ['tell me', 'yes'], true)) {
+                        $s->quietChanges = false;
+                    } elseif (in_array($v, ['quiet', 'no'], true)) {
+                        $s->quietChanges = true;
+                    } else {
+                        $errors[] = "line $n: changed_files must be \"tell me\" or \"quiet\"";
+                    }
+                    break;
                 case 'heartbeat':
                     if ($value !== '' && !preg_match('#^https?://\S+$#i', $value)) {
                         $errors[] = "line $n: heartbeat must be an http(s) address";
@@ -157,6 +169,7 @@ final class Settings
             'website' => $this->website,
             'contact' => $this->contact,
             'approve_updates' => $this->approveUpdates,
+            'changed_files' => $this->quietChanges === null ? null : ($this->quietChanges ? 'quiet' : 'tell me'),
             'heartbeat' => $this->heartbeat,
             'from' => $this->from,
         ];
@@ -177,6 +190,8 @@ final class Settings
         $s->website = self::text((string)($a['website'] ?? ''));
         $s->contact = self::text((string)($a['contact'] ?? ''));
         $s->approveUpdates = isset($a['approve_updates']) && is_bool($a['approve_updates']) ? $a['approve_updates'] : null;
+        $cf = $a['changed_files'] ?? null;
+        $s->quietChanges = $cf === 'quiet' ? true : ($cf === 'tell me' ? false : null);
         $hb = (string)($a['heartbeat'] ?? '');
         $s->heartbeat = preg_match('#^https?://\S+$#i', $hb) ? $hb : '';
         $from = (string)($a['from'] ?? '');

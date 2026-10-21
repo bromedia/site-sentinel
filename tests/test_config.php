@@ -147,3 +147,51 @@ t('Config::accountHome is the parent of the website folder as configured, before
     assertSame('', Config::accountHomeFor('/anywhere', ''));
     assertSame('/h/a', Config::accountHomeFor('/h/a/sentinel', '../public_html'), 'by name, even if nothing is there');
 });
+
+t('Config: quiet from settings or quiet_folders; core paths recognised', function () {
+    // quiet from settings.txt, through the packaged load path
+    $root = tmpdir();
+    $dir = tmpdir();
+    putFile($root, 'index.php', '<?php');
+    $write = function (string $settings, array $extra = []) use ($root, $dir) {
+        file_put_contents($dir . '/settings.txt', $settings);
+        file_put_contents($dir . '/sentinel.json', json_encode(array_merge([
+            'site_name' => 'test', 'site_root' => $root, 'state_dir' => $dir . '/state',
+            'settings_file' => 'settings.txt', 'profile' => 'generic',
+        ], $extra)));
+        return Config::load($dir . '/sentinel.json');
+    };
+    $c = $write("email = a@b.example\n");
+    assertSame(false, $c->quietChanges);
+    assertTrue(!$c->isQuiet('anything.php'));
+    $c = $write("email = a@b.example\nchanged_files = quiet\n");
+    assertSame(true, $c->quietChanges);
+    assertTrue($c->isQuiet('anything.php'));
+    // settings.txt wins over the developer key; the developer key works without settings.txt
+    assertSame(false, $write("email = a@b.example\nchanged_files = tell me\n", ['quiet_changes' => true])->quietChanges);
+    assertSame(true, $write("email = a@b.example\n", ['quiet_changes' => true])->quietChanges);
+    assertTrue(makeConfig($root, ['quiet_changes' => true])->isQuiet('x.php'));
+    assertTrue(!makeConfig($root)->isQuiet('x.php'));
+
+    // quiet_folders
+    $c = makeConfig($root, ['quiet_folders' => ['app/']]);
+    assertSame(['app/'], $c->quietFolders);
+    assertTrue($c->isQuiet('app/x.php'));
+    assertTrue(!$c->isQuiet('wp-content/plugins/p/p.php'));
+    assertSame(['app/'], $c->toArray()['quiet_folders']);
+    assertSame(['app/'], makeConfig($root, $c->toArray())->quietFolders);
+    assertTrue(!array_key_exists('quiet_folders', makeConfig($root)->toArray()));
+
+    // core paths, including a nested install
+    $wp = tmpdir();
+    putFile($wp, 'wp-config.php', '<?php');
+    putFile($wp, 'shop/wp-config.php', '<?php');
+    $c = makeConfig($wp, ['profile' => 'wordpress']);
+    foreach (['wp-includes/load.php', 'wp-admin/x/y.php', 'wp-login.php', 'index.php', 'xmlrpc.php', 'shop/wp-admin/x.php', 'shop/wp-includes/a.php', 'shop/wp-cron.php', 'shop/index.php'] as $rel) {
+        assertTrue($c->isCorePath($rel), $rel);
+    }
+    foreach (['wp-content/plugins/x.php', 'wp-config.php', 'shop/wp-content/themes/t/f.php', 'shop/wp-config.php', 'other/wp-login.php', 'other.php', 'wp-content/wp-login.php'] as $rel) {
+        assertTrue(!$c->isCorePath($rel), $rel);
+    }
+    assertTrue(!makeConfig($root)->isCorePath('wp-includes/load.php'));
+});

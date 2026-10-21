@@ -106,6 +106,27 @@ function runPackaged(string $dir, MailBox $mail, array $args = ['run']): array
     return $r;
 }
 
+t('Settings: changed_files accepts tell me / quiet / yes / no and rejects anything else', function () {
+    $base = "email = a@b.example\n";
+    assertSame(null, Settings::parse($base)->quietChanges);
+    foreach (['tell me' => false, 'Quiet' => true, 'yes' => false, 'no' => true, 'QUIET' => true, 'Tell Me' => false] as $value => $quiet) {
+        $s = Settings::parse($base . "changed_files = $value\n");
+        assertSame($quiet, $s->quietChanges, $value);
+        $back = Settings::fromArray($s->toArray());
+        assertSame($quiet, $back->quietChanges, "round trip of $value");
+    }
+    assertSame('quiet', Settings::parse($base . "changed_files = quiet\n")->toArray()['changed_files']);
+    assertSame('tell me', Settings::parse($base . "changed_files = tell me\n")->toArray()['changed_files']);
+    assertSame(null, Settings::parse($base)->toArray()['changed_files']);
+    assertSame(null, Settings::fromArray(['emails' => ['a@b.example']])->quietChanges);
+    try {
+        Settings::parse($base . "changed_files = maybe\n");
+        throw new RuntimeException('accepted maybe');
+    } catch (Sentinel\SettingsException $e) {
+        assertContains('changed_files must be "tell me" or "quiet"', $e->getMessage());
+    }
+});
+
 t('Settings: name = value lines, validated with line numbers', function () {
     $s = Settings::parse("\xEF\xBB\xBF# notes\nemail = a@b.example, c@d.example\nemail = A@B.example\nwebsite = Shop\ncontact = Bro Media\napprove_plugin_updates_automatically = no\n");
     assertSame(['a@b.example', 'c@d.example'], $s->emails);

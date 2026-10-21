@@ -22,6 +22,10 @@ final class Config
     public $stateDir = '';
     public $watch = ['.'];
     public $exclude = [];
+    /** Changes nothing flags are recorded without an email: everywhere (quiet_changes), or only under quiet_folders. */
+    public $quietChanges = false;
+    /** @var string[] */
+    public $quietFolders = [];
     public $codeExtensions = [];
     public $sensitive = [];
     public $uploadsDir = '';
@@ -80,6 +84,9 @@ final class Config
     /** Whether exclude and sensitive were configured, or are the profile's defaults (not written back). */
     private $excludeConfigured = false;
     private $sensitiveConfigured = false;
+    private $quietFoldersConfigured = false;
+    /** @var PathFilter|null built from quiet_folders when first needed */
+    private $quietFilter = null;
 
     public static function load(string $file): Config
     {
@@ -203,6 +210,9 @@ final class Config
         if ($s->approveUpdates !== null) {
             $raw['auto_accept_unverified_updates'] = $s->approveUpdates;
         }
+        if ($s->quietChanges !== null) { // settings.txt wins over a developer's quiet_changes in sentinel.json
+            $raw['quiet_changes'] = $s->quietChanges;
+        }
         if ($s->heartbeat !== '') {
             $raw['heartbeat_url'] = $s->heartbeat;
         }
@@ -258,6 +268,9 @@ final class Config
         $c->excludeConfigured = isset($raw['exclude']);
         $c->sensitiveConfigured = isset($raw['sensitive']);
         $c->exclude = self::strings($raw['exclude'] ?? $d['exclude']);
+        $c->quietFoldersConfigured = isset($raw['quiet_folders']);
+        $c->quietFolders = self::strings($raw['quiet_folders'] ?? []);
+        $c->quietChanges = (bool)($raw['quiet_changes'] ?? false);
         $c->codeExtensions = array_map('strtolower', self::strings($raw['code_extensions'] ?? $d['code_extensions']));
         $c->sensitive = self::strings($raw['sensitive'] ?? $d['sensitive']);
         $c->uploadsDir = trim((string)($raw['uploads_dir'] ?? $d['uploads_dir']), '/');
@@ -317,6 +330,7 @@ final class Config
             'exclude' => $this->exclude,
             'code_extensions' => $this->codeExtensions,
             'sensitive' => $this->sensitive,
+            'quiet_folders' => $this->quietFolders,
             'uploads_dir' => $this->uploadsDir,
             'temp_root' => $this->tempRoot,
             'channels' => $this->channels,
@@ -337,7 +351,11 @@ final class Config
             'clamdscan_path' => $this->clamdscanPath,
             'yara_path' => $this->yaraPath,
             'yara_rules' => $this->yaraRules,
-        ], array_filter(['exclude' => !$this->excludeConfigured, 'sensitive' => !$this->sensitiveConfigured]));
+        ], array_filter([
+            'exclude' => !$this->excludeConfigured,
+            'sensitive' => !$this->sensitiveConfigured,
+            'quiet_folders' => !$this->quietFoldersConfigured,
+        ]));
     }
 
     public function abs(string $rel): string
@@ -389,6 +407,46 @@ final class Config
     public function wordpressInstalls(): array
     {
         return array_merge($this->profile === 'wordpress' ? [''] : [], $this->nestedWordPress);
+    }
+
+    /** Whether a change at this path is recorded without an email unless something flags it. */
+    public function isQuiet(string $rel): bool
+    {
+        if ($this->quietChanges) {
+            return true;
+        }
+        if (!$this->quietFolders) {
+            return false;
+        }
+        if ($this->quietFilter === null) {
+            $this->quietFilter = new PathFilter($this->quietFolders);
+        }
+        return $this->quietFilter->matches($rel);
+    }
+
+    /**
+     * WordPress core of any install: its wp-admin and wp-includes, and the core files directly in
+     * its folder (index.php, xmlrpc.php, wp-*.php). wp-config.php is not core: it is already sensitive.
+     */
+    public function isCorePath(string $rel): bool
+    {
+        foreach ($this->wordpressInstalls() as $prefix) {
+            if ($prefix === '') {
+                $local = $rel;
+            } elseif (strpos($rel, $prefix . '/') === 0) {
+                $local = substr($rel, strlen($prefix) + 1);
+            } else {
+                continue;
+            }
+            if (strpos($local, 'wp-admin/') === 0 || strpos($local, 'wp-includes/') === 0) {
+                return true;
+            }
+            if (strpos($local, '/') === false && $local !== 'wp-config.php'
+                && ($local === 'index.php' || $local === 'xmlrpc.php' || preg_match('/^wp-[^\/]*\.php$/', $local) === 1)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public function hasWordPress(): bool
