@@ -78,6 +78,21 @@ final class Doctor
         }
         $lines[] = 'Watch: ' . implode(', ', $c->watch);
         $lines[] = 'Excluded (not scanned): ' . implode(', ', $c->exclusions());
+        $lines[] = $c->quietChanges ? 'Changed files: quiet (changes that nothing flags are recorded without an email)' : 'Changed files: tell me';
+        if ($c->quietFolders) {
+            $lines[] = 'Quiet folders: ' . implode(', ', $c->quietFolders);
+        }
+        $cannotRun = $c->quietChanges || $c->quietFolders ? ExternalScanner::fromConfig($c)->cannotRun() : [];
+        if ($cannotRun) {
+            // A malware scan that could not run is never taken as clean, so nothing is quiet in that run.
+            $lines[] = 'Quiet will not apply while a malware scanner that is set up cannot run (' . implode('; ', $cannotRun) . '): changes are emailed as usual.';
+        }
+        if (is_file($c->stateDir . '/' . QuietLog::FILE)) { // the state folder exists, so it is not created here
+            $entries = (new QuietLog(new State($c->stateDir)))->pending()['entries'];
+            if ($entries) {
+                $lines[] = 'Last accepted quietly: ' . self::when(max(array_column($entries, 'ts')));
+            }
+        }
         $lines[] = 'Scan budget: ' . $c->budgetSeconds . 's / ' . $c->budgetMemoryMb . 'MB for file comparison; analysis and initialisation can take longer.';
         $lines[] = 'No database checks are performed.';
         $dismissed = is_readable($c->stateDir . '/' . Dismissals::FILE) ? json_decode((string)file_get_contents($c->stateDir . '/' . Dismissals::FILE), true) : [];

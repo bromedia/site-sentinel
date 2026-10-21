@@ -94,6 +94,16 @@ final class ExternalScanner
         return null;
     }
 
+    /**
+     * Configured scanners that cannot run on this host, known without running anything (for doctor).
+     *
+     * @return string[]
+     */
+    public function cannotRun(): array
+    {
+        return $this->disabledNote !== null ? array_merge($this->unavailable, [$this->disabledNote]) : $this->unavailable;
+    }
+
     public function enabled(): bool
     {
         return $this->clamscan !== null || $this->clamdscan !== null || $this->yara !== null;

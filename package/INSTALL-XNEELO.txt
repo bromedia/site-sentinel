@@ -66,6 +66,9 @@ GOOD TO KNOW
    - You can edit settings.txt later, for example to change who receives alerts. Both the
      old and the new addresses are told about the change. If the file has a mistake, Site
      Sentinel keeps using the last settings that worked and emails you about the mistake.
+   - By default you are told about every change to the website's files that cannot be
+     verified. Your web developer can change settings.txt so such changes are recorded
+     quietly instead; anything that looks like hacking is still emailed straight away.
    - Updating or removing Site Sentinel is a job for your web developer.
 
 

@@ -286,6 +286,8 @@ final class Run
             '  Files recorded: ' . number_format($recorded),
             '  WordPress: ' . self::wordpressLine($config, $scan, $who),
         ], $config->hasWordPress() ? ['  Plugin and theme updates: ' . self::policy($config->autoAcceptUnverifiedUpdates)] : [], [
+            '  Changed files: ' . ($config->quietChanges ? 'recorded quietly unless they look like hacking' : 'you are told about every change that cannot be verified'),
+        ], $config->quietFolders ? ['  Recorded quietly in: ' . implode(', ', $config->quietFolders)] : [], [
             '  Alerts go to: ' . implode(', ', self::recipients($config)),
             '',
             'What happens now',
@@ -407,6 +409,7 @@ final class Run
                 'website' => 'Website name',
                 'contact' => 'Contact named in alerts',
                 'approve_updates' => 'Plugin and theme updates',
+                'changed_files' => 'Changed files',
                 'heartbeat' => 'Heartbeat',
                 'from' => 'Alerts are sent from',
             ];
@@ -416,6 +419,9 @@ final class Run
                 }
                 if ($k === 'approve_updates') {
                     return self::policy($v === null ? $config->autoAcceptUnverifiedUpdates : (bool)$v);
+                }
+                if ($k === 'changed_files') {
+                    return ($v === null ? $config->quietChanges : $v === 'quiet') ? 'quiet' : 'tell me';
                 }
                 return (string)$v !== '' ? (string)$v : '(not set)';
             };

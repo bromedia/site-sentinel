@@ -92,6 +92,9 @@ function packagedSite(array $siteFiles = [], string $emailLine = 'email = owner@
     }
     file_put_contents($dir . '/sentinel.php', '<?php // stands in for the built script');
     $settings = (string)file_get_contents($dir . '/settings.txt');
+    if (strpos($emailLine, 'changed_files') !== false) { // the test sets it; the shipped line must not override it
+        $settings = str_replace("changed_files = tell me\n", '', $settings);
+    }
     file_put_contents($dir . '/settings.txt', str_replace('email = you@example.com', $emailLine, $settings));
     // Tests opt into the grace period explicitly; checksums need wordpress.org.
     $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
@@ -1329,4 +1332,82 @@ t('run: the next alert\'s report lists what was accepted quietly since the last 
     $section = substr($section, 0, (int)strpos($section, "\n\n"));
     assertNotContains('first quiet edit', $section);
     assertSame(1, substr_count($section, 'functions.php'), 'only the second edit of functions.php, not the first');
+});
+
+t('changed-files: the welcome and the settings notice state the changed-files setting', function () {
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    $welcome = $mail->sent[0]['body'];
+    assertContains("\n  Changed files: you are told about every change that cannot be verified\n", $welcome);
+    assertNotContains('Recorded quietly in:', $welcome);
+
+    $mail = new MailBox();
+    [, , $dir] = packagedSite([], "email = owner@client.example\nchanged_files = quiet");
+    runPackaged($dir, $mail);
+    assertContains("\n  Changed files: recorded quietly unless they look like hacking\n", $mail->sent[0]['body']);
+    assertNotContains('you are told about every change', $mail->sent[0]['body']);
+
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['quiet_folders' => ['wp-content/themes/', 'blog/']]));
+    runPackaged($dir, $mail);
+    assertContains("\n  Changed files: you are told about every change that cannot be verified\n  Recorded quietly in: wp-content/themes/, blog/\n", $mail->sent[0]['body']);
+
+    // Changing the setting is announced like the others, in the previous setting's words.
+    $mail = new MailBox();
+    [, , $dir] = packagedSite();
+    runPackaged($dir, $mail);
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = tell me', 'changed_files = quiet', (string)file_get_contents($dir . '/settings.txt')));
+    runPackaged($dir, $mail);
+    $notices = array_values(array_filter($mail->sent, function ($m) {
+        return strpos($m['subject'], 'settings changed') !== false;
+    }));
+    assertSame(1, count($notices));
+    assertContains('  Changed files: quiet (was: tell me)', $notices[0]['body']);
+});
+
+t('changed-files: doctor shows the changed-files setting, quiet folders and the last quiet acceptance', function () {
+    [, , $dir] = packagedSite();
+    $mail = new MailBox();
+    runPackaged($dir, $mail);
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains("Changed files: tell me\n", $text);
+    assertNotContains('Quiet folders:', $text);
+    assertNotContains('Last accepted quietly:', $text);
+
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = tell me', 'changed_files = quiet', (string)file_get_contents($dir . '/settings.txt')));
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['quiet_folders' => ['blog/', 'wp-content/themes/']]));
+    $state = new Sentinel\State($dir . '/state');
+    $ts = gmmktime(9, 5, 7, 10, 20, 2026);
+    (new Sentinel\QuietLog($state))->add(['older.php'], $ts - 3600);
+    (new Sentinel\QuietLog($state))->add(['newer.php'], $ts);
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains("Changed files: quiet (changes that nothing flags are recorded without an email)\n", $text);
+    assertContains("Quiet folders: blog/, wp-content/themes/\n", $text);
+    assertContains("Last accepted quietly: 2026-10-20 09:05:07 UTC\n", $text);
+    assertNotContains('quiet will not apply', $text, 'no scanner configured');
+
+    // A scanner that is configured but cannot run switches quiet off for every run: doctor says so.
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg + ['clamscan_path' => $dir . '/no-such-clamscan']));
+    $text = runPackaged($dir, $mail, ['doctor'])['text'];
+    assertContains('Quiet will not apply while a malware scanner that is set up cannot run (clamscan_path is set but ', $text);
+    file_put_contents($dir . '/settings.txt', str_replace('changed_files = quiet', 'changed_files = tell me', (string)file_get_contents($dir . '/settings.txt')));
+    $cfg = json_decode((string)file_get_contents($dir . '/sentinel.json'), true);
+    unset($cfg['quiet_folders']);
+    file_put_contents($dir . '/sentinel.json', json_encode($cfg));
+    assertNotContains('Quiet will not apply', runPackaged($dir, $mail, ['doctor'])['text'], 'nothing is quiet, so nothing to say');
+});
+
+t('changed-files: the shipped settings.txt has item 5 and parses as tell me', function () {
+    $text = (string)file_get_contents(dirname(__DIR__) . '/package/settings.txt');
+    assertContains("# 5. Changes to the website's files that do not look like hacking: tell me or quiet\n", $text);
+    assertContains("#    tell me: every change that cannot be verified sends an email (safest).\n", $text);
+    assertContains("#    quiet:   such changes are recorded without an email; anything that looks like hacking,\n#             and changes to sensitive files, still send an email straight away.\nchanged_files = tell me\n", $text);
+    $s = Settings::parse(str_replace('you@example.com', 'owner@client.example', $text));
+    assertSame(false, $s->quietChanges);
+    assertSame('tell me', $s->toArray()['changed_files']);
 });
