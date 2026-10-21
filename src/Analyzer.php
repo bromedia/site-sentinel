@@ -111,6 +111,8 @@ final class Analyzer
         }
         $outcomes = [];
         $quiet = [];
+        /** @var array<string,bool> changed or new files that were not world-writable before and are now: never quiet */
+        $worldWritable = [];
         $dismissed = 0;
         $official = 0;
         $removed = 0;
@@ -257,6 +259,9 @@ final class Analyzer
                 $deferred++;
                 continue;
             }
+            if (($rec['mode'] & 0002) !== 0 && (((int)($c['old']['mode'] ?? 0)) & 0002) === 0) {
+                $worldWritable[$rel] = true;
+            }
             $queue[$rel] = $this->config->abs($rel);
             $queueHashes[$rel] = $hash;
             $groups[self::groupOf($rel, $this->config->nestedWordPress)][$rel] = $hash;
@@ -319,12 +324,13 @@ final class Analyzer
             // Quiet: what nothing flagged is accepted without a finding where the site or folder asks
             // for it. Never WordPress core (its checksums may just not have been downloadable), never
             // a plugin or theme with a detection, never while a scanner failed, and never a plugin
-            // wordpress.org hosts or could not be asked about (its files did not verify).
+            // wordpress.org hosts or could not be asked about (its files did not verify). Nor a file
+            // that became world-writable (or arrived so) with this change.
             $eligible = [];
             if (!$suspect && !$externalFailed) {
                 foreach (array_keys($files) as $n) {
                     $n = (string)$n;
-                    if ($this->config->isQuiet($n) && !$this->config->isCorePath($n) && !self::isServerConfig($n)) {
+                    if ($this->config->isQuiet($n) && !$this->config->isCorePath($n) && !self::isServerConfig($n) && !isset($worldWritable[$n])) {
                         $eligible[] = $n;
                     }
                 }

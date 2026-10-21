@@ -218,3 +218,18 @@ t('Config: quiet_changes is quiet only when it is the boolean true', function ()
     }
     assertSame(true, makeConfig($root, ['quiet_changes' => true])->quietChanges);
 });
+
+t('Config: WordPress files shipped in wp-content (index.php placeholders, hello.php) count as core', function () {
+    $root = tmpdir();
+    mkdir($root . '/shop');
+    putFile($root, 'shop/wp-config.php', '<?php');
+    $c = makeConfig($root, ['profile' => 'wordpress']);
+    foreach (['', 'shop/'] as $p) {
+        foreach (['wp-content/index.php', 'wp-content/plugins/index.php', 'wp-content/themes/index.php', 'wp-content/plugins/hello.php'] as $rel) {
+            assertTrue($c->isCorePath($p . $rel), $p . $rel);
+        }
+    }
+    foreach (['wp-content/plugins/foo/index.php', 'wp-content/themes/t/index.php', 'wp-content/uploads/index.php', 'wp-content/plugins/hello/hello.php', 'lib/wp-content/index.php'] as $rel) {
+        assertTrue(!$c->isCorePath($rel), $rel);
+    }
+});

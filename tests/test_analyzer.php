@@ -822,3 +822,66 @@ t('Quiet folders: "app/" is the app folder of the website only, not a folder of 
     assertSame(['unexplained-change@wp-content/plugins/app', 'unexplained-change@wp-content/themes/t'], ruleList($r));
     assertSame(['app/x.php'], $r['quiet']);
 });
+
+t('Quiet: a file that becomes world-writable with its content, or arrives world-writable, is not quiet', function () {
+    [$root, $c, $b] = wpFixture(['wp-content/themes/t/f.php' => '<?php // theme', 'wp-content/themes/t/g.php' => '<?php // g'], ['quiet_changes' => true]);
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited');
+    chmod($root . '/wp-content/themes/t/f.php', 0666);
+    putFile($root, 'wp-content/themes/t/new.php', '<?php // new');
+    chmod($root . '/wp-content/themes/t/new.php', 0666);
+    bump($root, 'wp-content/themes/t/g.php', '<?php // g, edited'); // stays 0644: still quiet
+    clearstatcache();
+    if ((fileperms($root . '/wp-content/themes/t/new.php') & 0002) === 0) {
+        skip('chmod has no effect here');
+    }
+    $r = runAnalysis($c, $b);
+    assertSame(['unexplained-change@wp-content/themes/t'], ruleList($r));
+    assertSame(2, $r['findings'][0]->files);
+    assertSame([
+        'wp-content/themes/t/f.php' => Report::STATUSES[0],
+        'wp-content/themes/t/g.php' => Report::QUIET,
+        'wp-content/themes/t/new.php' => Report::STATUSES[0],
+    ], sortedOutcomes($r));
+    assertSame(['wp-content/themes/t/g.php'], $r['quiet']);
+
+    // Already world-writable before: an edit does not make it "become" so, and stays quiet.
+    [$root, $c, $b] = wpFixture(['wp-content/themes/t/f.php' => '<?php // theme'], ['quiet_changes' => true]);
+    chmod($root . '/wp-content/themes/t/f.php', 0666);
+    clearstatcache();
+    snapshot($c, $b);
+    bump($root, 'wp-content/themes/t/f.php', '<?php // theme, edited');
+    $r = runAnalysis($c, $b);
+    assertSame([], ruleList($r));
+    assertSame(['wp-content/themes/t/f.php'], $r['quiet']);
+});
+
+t('Quiet: WordPress files shipped in wp-content are never quiet when their checksums are not available', function () {
+    [$root, $c, $b] = wpFixture(['wp-content/index.php' => '<?php // Silence is golden.', 'wp-content/plugins/hello.php' => '<?php // hello', 'wp-content/themes/index.php' => '<?php // Silence'], ['quiet_changes' => true]);
+    bump($root, 'wp-content/index.php', '<?php // injected');
+    bump($root, 'wp-content/plugins/hello.php', '<?php // injected');
+    bump($root, 'wp-content/themes/index.php', '<?php // injected');
+    $r = runAnalysis($c, $b, analyzerFor($c, new WpChecksum(new FakeHttp(), $c, tmpdir())));
+    assertSame([], $r['quiet']);
+    assertSame([
+        'wp-content/index.php' => Report::STATUSES[0],
+        'wp-content/plugins/hello.php' => Report::STATUSES[0],
+        'wp-content/themes/index.php' => Report::STATUSES[0],
+    ], sortedOutcomes($r));
+});
+
+t('Quiet: WordPress drop-ins that load without being activated are sensitive files, never quiet', function () {
+    $dropins = ['sunrise.php', 'maintenance.php', 'fatal-error-handler.php', 'php-error.php', 'db-error.php', 'install.php', 'blog-deleted.php', 'advanced-cache.php'];
+    [$root, $c, $b] = wpFixture(['shop/wp-config.php' => '<?php'], ['quiet_changes' => true]);
+    $want = [];
+    foreach ($dropins as $f) {
+        foreach (['', 'shop/'] as $p) {
+            putFile($root, $p . 'wp-content/' . $f, '<?php // drop-in');
+            $want[] = 'sensitive-file-changed@' . $p . 'wp-content/' . $f;
+        }
+    }
+    putFile($root, 'wp-content/plugins/foo/install.php', '<?php // a plugin file of that name is not a drop-in');
+    sort($want);
+    $r = runAnalysis($c, $b, null, VersionTracker::read($c));
+    assertSame($want, ruleList($r));
+    assertSame(['wp-content/plugins/foo/install.php'], $r['quiet']);
+});

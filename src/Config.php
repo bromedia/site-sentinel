@@ -433,9 +433,13 @@ final class Config
         return $this->quietFilter->matches($rel);
     }
 
+    /** Files WordPress itself ships in wp-content, relative to an install. */
+    private const CORE_IN_WP_CONTENT = ['wp-content/index.php', 'wp-content/plugins/index.php', 'wp-content/themes/index.php', 'wp-content/plugins/hello.php'];
+
     /**
-     * WordPress core of any install: its wp-admin and wp-includes, and the core files directly in
-     * its folder (index.php, xmlrpc.php, wp-*.php). wp-config.php is not core: it is already sensitive.
+     * WordPress core of any install: its wp-admin and wp-includes, the core files directly in its
+     * folder (index.php, xmlrpc.php, wp-*.php), and the few files WordPress ships in wp-content
+     * (the index.php placeholders and hello.php). wp-config.php is not core: it is already sensitive.
      */
     public function isCorePath(string $rel): bool
     {
@@ -447,7 +451,7 @@ final class Config
             } else {
                 continue;
             }
-            if (strpos($local, 'wp-admin/') === 0 || strpos($local, 'wp-includes/') === 0) {
+            if (strpos($local, 'wp-admin/') === 0 || strpos($local, 'wp-includes/') === 0 || in_array($local, self::CORE_IN_WP_CONTENT, true)) {
                 return true;
             }
             if (strpos($local, '/') === false && $local !== 'wp-config.php'
