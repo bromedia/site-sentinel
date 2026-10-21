@@ -171,6 +171,14 @@ final class Analyzer
             // itself is then judged like any other.
             $hits = $this->undismissed($this->pinned($hits, $rel, $hash), $dismissed);
             if ($hits) {
+                // Reported before at a higher severity and not reviewed: the lower hits now do not
+                // lower it (a Critical rewritten until only a Warning rule matches stays Critical).
+                $stored = isset($this->unresolved[$rel]) ? (int)($this->unresolved[$rel]['severity'] ?? Finding::CRITICAL) : Finding::INFO;
+                if ($stored > max(array_map(function (Finding $h) {
+                    return $h->severity;
+                }, $hits))) {
+                    $findings[] = self::unresolvedFinding($rel, $hash, $this->unresolved[$rel], 'changed');
+                }
                 foreach ($hits as $h) {
                     $findings[] = $h;
                     if (!in_array($h->rule, Digest::MONITORING, true)) { // a check that failed is retried, not remembered

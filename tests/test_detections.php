@@ -275,3 +275,28 @@ t('Detections: a rule that failed to run is retried, never remembered as a detec
     }
     assertSame(['request-callable'], (new Detections($state))->all()['wp-content/plugins/evil/inc.php']['rules'] ?? null);
 });
+
+t('Detections: Critical, then only a Warning rule, then nothing: stays Critical until reviewed, with reminders', function () {
+    [$root, $config, $state, , , $http, $clock] = laundering();
+    $critOnly = new FakeNotifier();
+    $m = new Monitor($config, $state, $http, [new Channel($critOnly, Finding::CRITICAL)], [], $clock);
+    $file = 'wp-content/plugins/evil/inc.php';
+    $steps = [
+        'critical hit' => '<?php ' . LAUNDER_PAYLOAD,
+        'only a warning rule' => '<?php echo ' . str_repeat('chr(65) . ', 9) . "'';\n",
+        'nothing matches' => '<?php ' . LAUNDER_QUIET,
+    ];
+    foreach ($steps as $step => $content) {
+        $heard = count($critOnly->sent);
+        launderWrite($root, [$file => $content]);
+        $m->run('check');
+        assertSame($heard + 1, count($critOnly->sent), "$step: the Critical-only channel hears about it");
+        assertSame(Finding::CRITICAL, (new Detections($state))->all()[$file]['severity'] ?? null, "$step: still stored as Critical");
+    }
+    // Not reviewed a day later: a Critical reminder.
+    $clock->t += 25 * 3600;
+    $heard = count($critOnly->sent);
+    $r = $m->run('check');
+    assertContains("  CRITICAL $file detection-unresolved", implode("\n", $r['lines']));
+    assertSame($heard + 1, count($critOnly->sent), 'daily reminder');
+});

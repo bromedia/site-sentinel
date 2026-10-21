@@ -36,7 +36,8 @@ final class Detections
 
     /**
      * The latest detection on a path replaces an earlier one, so reviewing what is there now is
-     * what resolves it. Its severity is kept, so an unresolved Critical stays Critical.
+     * what resolves it. The highest severity seen is kept until it is resolved, so a Critical that
+     * is later rewritten into something that only raises a Warning, or nothing, stays Critical.
      *
      * @param string[] $rules
      */
@@ -45,6 +46,7 @@ final class Detections
         $rules = array_values(array_unique($rules));
         sort($rules);
         $old = $this->entries[$path] ?? null;
+        $severity = max($severity, (int)($old['severity'] ?? $severity));
         if ($old !== null && $old['sha256'] === $sha256 && $old['rules'] === $rules && (int)($old['severity'] ?? -1) === $severity) {
             return;
         }
