@@ -239,3 +239,51 @@ t('Report: two reports in the same minute are both kept, never one written over 
     assertSame('keep me', (string)file_get_contents($target));
     assertSame($dir2 . '/sentinel-report-example-shop-20261021-1430-2.txt', $file);
 });
+
+t('Report: a short write (file-size limit) is a failure, the partial file is removed and nothing is claimed as saved', function () {
+    if (!Sentinel\Proc::available() || !is_executable('/bin/sh')) {
+        skip('needs proc_open and /bin/sh');
+    }
+    $make = function (int $n): array {
+        $changes = [];
+        for ($i = 0; $i < $n; $i++) {
+            $changes[] = reportChange('new', sprintf('wp-content/themes/shopfront/inc/part-%03d.php', $i), null, reportRec(5, 1792000000, str_repeat('a', 64)));
+        }
+        return $changes;
+    };
+    // Size the report so that everything but the last line (a long note) fits in 4 KB: the file
+    // limit then cuts the last write short, which fwrite reports as a smaller count, not as false.
+    $note = str_repeat('n', 600);
+    $n = 1;
+    while (strlen(reportText(reportMeta(), [], [], $make($n))) < 3700) {
+        $n++;
+    }
+    $before = strlen(reportText(reportMeta(), [], [], $make($n), [], []));
+    $full = strlen(reportText(reportMeta(), [], [], $make($n), [], [$note]));
+    assertTrue($before + 8 < 4096 && $full > 4096 + 100, "fixture sizes $before / $full");
+
+    $dir = tmpdir();
+    $reports = $dir . '/reports';
+    $script = $dir . '/write-report.php';
+    file_put_contents($script, '<?php
+require ' . var_export(__DIR__ . '/bootstrap.php', true) . ';
+$changes = [];
+for ($i = 0; $i < (int)$argv[2]; $i++) {
+    $changes[] = ["type" => "new", "path" => sprintf("wp-content/themes/shopfront/inc/part-%03d.php", $i), "old" => null,
+        "new" => ["size" => 5, "mtime" => 1792000000, "hash" => str_repeat("a", 64), "mode" => 0100644], "content_same" => false];
+}
+$meta = ["site" => "Example Shop", "root" => "", "ts" => 1792000000, "version" => "1.2.3", "mode" => "incremental", "complete" => true];
+try {
+    $f = Sentinel\Report::write($argv[1], $meta, [], [], $changes, [], [str_repeat("n", 600)]);
+    echo "saved " . filesize($f);
+} catch (RuntimeException $e) {
+    echo "failed: " . $e->getMessage();
+    exit(3);
+}');
+    // ulimit -f 8: the file stops growing at 4 KB; SIGXFSZ is ignored so PHP sees a short write instead of being killed.
+    $cmd = "trap '' XFSZ; ulimit -f 8; exec " . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg($reports) . ' ' . $n;
+    $r = Sentinel\Proc::run(['/bin/sh', '-c', $cmd], 30);
+    assertSame(3, $r['exit'], 'a truncated report must be a failure, got: ' . $r['out'] . $r['err']);
+    assertSame('failed: cannot write report', $r['out']);
+    assertSame([], glob($reports . '/*') ?: [], 'the partial file is removed');
+});

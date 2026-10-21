@@ -89,7 +89,10 @@ final class Report
             @unlink($file);
             throw $e instanceof \RuntimeException ? $e : new \RuntimeException('cannot write report', 0, $e);
         }
-        if (!@fclose($fh)) {
+        // Buffered data only reaches the disk at flush or close: a failure there is a failed report too.
+        $flushed = @fflush($fh);
+        $closed = @fclose($fh);
+        if (!$flushed || !$closed) {
             @unlink($file);
             throw new \RuntimeException('cannot write report');
         }
@@ -97,14 +100,31 @@ final class Report
         return $file;
     }
 
+    /**
+     * Writes all of $data. A write cut short (disk full, quota, file-size limit) is retried for the
+     * rest; when nothing more can be written the report is incomplete and this throws.
+     *
+     * @param resource $fh
+     */
+    private static function writeAll($fh, string $data): void
+    {
+        $done = 0;
+        $total = strlen($data);
+        while ($done < $total) {
+            $n = @fwrite($fh, $done === 0 ? $data : substr($data, $done));
+            if ($n === false || $n <= 0) {
+                throw new \RuntimeException('cannot write report');
+            }
+            $done += $n;
+        }
+    }
+
     /** @param resource $fh */
     private static function stream($fh, array $meta, array $findings, array $due, array $changes, array $outcomes, array $notes): void
     {
         $scrub = self::pathScrubber((string)($meta['root'] ?? ''), (string)($meta['home'] ?? ''));
         $put = function (string $line) use ($fh, $scrub): void {
-            if (@fwrite($fh, Finding::line($scrub($line)) . "\n") === false) {
-                throw new \RuntimeException('cannot write report');
-            }
+            self::writeAll($fh, Finding::line($scrub($line)) . "\n");
         };
         $scope = !empty($meta['complete']) ? self::COMPLETE : self::PARTIAL;
 
