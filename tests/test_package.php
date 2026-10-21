@@ -303,7 +303,10 @@ t('run: setup on an already infected site watches the rest, keeps the flagged fi
     assertSame(1, runPackaged($dir, $mail)['exit']);
     $body = implode("\n", array_column($mail->since($n), 'body'));
     assertContains('wp-content/themes/Avada', $body);
-    assertContains('1 file(s) changed without a version change', $body); // the file itself is in the report
+    assertContains('1 file(s) changed without a version change', $body);
+    $att = $mail->attachment($n);
+    assertTrue($att !== null, 'the report is attached');
+    assertContains('wp-content/themes/Avada/functions.php', $att['content'], 'the file itself is in the report');
     runPackaged($dir, $mail, ['accept', '--path=wp-content/themes/Avada/functions.php']);
 
     // The flagged file is reported again once the daily reminder is due.
@@ -594,6 +597,79 @@ t('Client alerts are plain language with the contact, no commands, technical det
     assertNotContains('php sentinel.php', $m['body']);
     assertContains('Technical details for your web developer', $m['body']);
     assertTrue(strpos($m['body'], 'POSSIBLE HACK') < strpos($m['body'], 'Technical details'));
+});
+
+/** A packaged site whose Avada theme holds $n extra files, set up and then changed (all $n edited). */
+function packagedSiteWithChanges(int $n, MailBox $mail): array
+{
+    $files = [];
+    for ($i = 1; $i <= $n; $i++) {
+        $files[sprintf('wp-content/themes/Avada/inc/part-%04d.php', $i)] = '<?php // part ' . $i;
+    }
+    [, $www, $dir] = packagedSite($files);
+    runPackaged($dir, $mail); // setup
+    $when = time() + 5;
+    for ($i = 1; $i <= $n; $i++) {
+        $f = $www . sprintf('/wp-content/themes/Avada/inc/part-%04d.php', $i);
+        file_put_contents($f, '<?php // part ' . $i . ' edited');
+        touch($f, $when);
+    }
+    clearstatcache();
+    return [$www, $dir];
+}
+
+t('run: an alert about 30 changed files attaches a report that lists all 30, and keeps it on the server', function () {
+    $mail = new MailBox();
+    [, $dir] = packagedSiteWithChanges(30, $mail);
+    $before = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertSame($before + 1, count($mail->sent), 'one mail');
+    $att = $mail->attachment($before);
+    assertTrue($att !== null, 'the mail carries the report');
+    assertContains('sentinel-report-', $att['name']);
+    for ($i = 1; $i <= 30; $i++) {
+        assertContains(sprintf('wp-content/themes/Avada/inc/part-%04d.php', $i), $att['content']);
+    }
+    $kept = glob($dir . '/state/reports/sentinel-report-*.txt');
+    assertSame(1, count($kept), 'a copy stays on the server');
+    assertSame($att['content'], (string)file_get_contents($kept[0]), 'the same report');
+    assertContains('CHANGED FILES (30)', $att['content']);
+    assertContains('in this email', $att['content']);
+    assertNotContains($dir, $att['content'], 'no absolute paths');
+    assertNotContains($dir, $mail->sent[$before]['body'], 'no absolute paths');
+});
+
+t('run: the alert still goes out when the report cannot be saved', function () {
+    $mail = new MailBox();
+    [, $dir] = packagedSiteWithChanges(3, $mail);
+    file_put_contents($dir . '/state/reports', 'in the way'); // a file where the folder should be
+    $before = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    assertSame($before + 1, count($mail->sent), 'the alert went out');
+    assertSame(null, $mail->attachment($before), 'no attachment');
+    $body = $mail->sent[$before]['body'];
+    assertContains('The full report could not be saved: ', $body);
+    assertNotContains($dir, $body, 'no absolute paths');
+    $note = strpos($body, 'The full report could not be saved');
+    assertTrue($note < strpos($body, "\n--\n"), 'the note comes before the developer section');
+    assertTrue($note > strpos($body, 'WEBSITE FILES CHANGED'), 'the note sits with the footer area, after the summary');
+});
+
+t('run: a large change list is listed in full and the attachment uses Report::CAP', function () {
+    $mail = new MailBox();
+    [, $dir] = packagedSiteWithChanges(3000, $mail);
+    $before = count($mail->sent);
+    assertSame(1, runPackaged($dir, $mail)['exit']);
+    $att = $mail->attachment($before);
+    assertTrue($att !== null, 'attached');
+    assertTrue(strlen($att['content']) <= Sentinel\Report::CAP + 400, 'within the cap');
+    $kept = glob($dir . '/state/reports/sentinel-report-*.txt');
+    assertSame(1, count($kept));
+    $full = (string)file_get_contents($kept[0]);
+    assertContains('CHANGED FILES (3000)', $full);
+    assertSame(3000, preg_match_all('#wp-content/themes/Avada/inc/part-\d{4}\.php#', $full), 'the server copy lists all 3,000');
+    assertContains('part-3000.php', $full);
+    assertContains('part-0001.php', $att['content']);
 });
 
 t('INSTALL-XNEELO.txt says a timeout on the Run screen is normal, and what a security-alert welcome means', function () {

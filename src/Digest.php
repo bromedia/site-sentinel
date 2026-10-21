@@ -215,6 +215,22 @@ final class Digest
         return ['subject' => $subject, 'body' => implode("\n", array_map([Finding::class, 'line'], $lines)), 'top' => $top];
     }
 
+    /**
+     * Adds a line about the report to a finished body: in a client email directly above the
+     * "--" line that opens the developer section, in a technical one just below the header.
+     */
+    public static function withReportNote(string $body, string $note, bool $client): string
+    {
+        $note = Finding::line($note);
+        $lines = explode("\n", $body);
+        $at = $client ? array_search('--', $lines, true) : 4;
+        if ($at === false) {
+            $at = count($lines);
+        }
+        array_splice($lines, (int)$at, 0, $note === '' ? [] : ($client ? [$note] : [$note, '']));
+        return implode("\n", $lines);
+    }
+
     private static function action(Finding $f): string
     {
         if (isset(self::ACTIONS[$f->rule])) {

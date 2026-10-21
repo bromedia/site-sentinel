@@ -205,7 +205,9 @@ t('Monitor: an unverified plugin update alerts once, stays held until accepted, 
     bump($root, 'wp-content/plugins/premium/inc/helper.php', '<?php function helper() {} $f = "sys" . "tem"; $f($_SERVER["HTTP_X"] ?? "");');
     assertSame(1, $m->run('check')['exit']);
     assertSame(2, count($n->sent), 'a further change while pending must alert again');
-    assertContains('2 changed file(s)', $n->sent[1]['body']); // the files themselves are in the report
+    assertContains('2 changed file(s)', $n->sent[1]['body']);
+    assertContains('wp-content/plugins/premium/inc/helper.php', (string)$n->sent[1]['attachment']['content'], 'the files themselves are in the report');
+    assertContains('wp-content/plugins/premium/premium.php', (string)$n->sent[1]['attachment']['content']);
 
     // Reviewed and accepted: quiet afterwards, version advanced.
     $r = Sentinel\Accept::run($config, $state, ['wp-content/plugins/premium'], false, []);
@@ -286,7 +288,8 @@ t('Monitor: with auto-accept, an update arriving with a detection in the same pl
     bump($root, 'wp-content/plugins/foo/inc/helper.php', "<?php // helper, quietly edited\n");
     assertSame(1, $m->run('check')['exit']);
     assertTrue(count($n->sent) > $before);
-    assertContains('2 changed file(s)', $n->sent[count($n->sent) - 1]['body']); // the files themselves are in the report
+    assertContains('2 changed file(s)', $n->sent[count($n->sent) - 1]['body']);
+    assertContains('wp-content/plugins/foo/inc/helper.php', (string)$n->sent[count($n->sent) - 1]['attachment']['content'], 'the files themselves are in the report');
 
     // Reviewed and accepted: the update is recorded, and the next quiet edit is not part of it.
     assertTrue(isset((new \Sentinel\Detections($state))->all()['wp-content/plugins/foo/evil.php']), 'the detection is remembered until then');
@@ -446,4 +449,39 @@ t('Monitor: a change that just arrived is deferred, then judged on a later run',
     assertSame(1, $r2['exit']);
     assertSame(1, count($n->sent));
     assertContains('unexplained-change', $n->sent[0]['body']);
+});
+
+t('Monitor: a technical alert carries the report, and says so near the top when it cannot be saved', function () {
+    [$root, , $state, $m, $n] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a']);
+    bump($root, 'a.php', '<?php // a edited');
+    assertSame(1, $m->run('check')['exit']);
+    $att = $n->sent[0]['attachment'];
+    assertTrue($att !== null, 'attached');
+    assertContains('a.php', $att['content']);
+    assertContains('/reports/' . $att['name'], $att['path'], 'the pointer is a relative path');
+    assertNotContains($root, $att['path']);
+    assertSame(1, count(glob($state->path('reports') . '/sentinel-report-*.txt')));
+
+    [$root2, , $state2, $m2, $n2] = monitorFixture(['index.php' => '<?php', 'a.php' => '<?php // a']);
+    file_put_contents($state2->path('reports'), 'in the way');
+    bump($root2, 'a.php', '<?php // a edited');
+    assertSame(1, $m2->run('check')['exit']);
+    assertSame(null, $n2->sent[0]['attachment']);
+    $lines = explode("\n", $n2->sent[0]['body']);
+    assertContains('The full report could not be saved: ', $lines[4], 'right below the header');
+    assertNotContains($root2, $n2->sent[0]['body']);
+});
+
+t('Digest: the report note goes above the developer section of a client email and below the header of a technical one', function () {
+    $f = [new Sentinel\Finding(Sentinel\Finding::WARNING, 'a.php', 'unexplained-change', 'changed')];
+    $client = Sentinel\Digest::forClient('Shop', 1760000000, $f, [], [], '');
+    $body = Sentinel\Digest::withReportNote($client['body'], 'The full report could not be saved: disk full', true);
+    $lines = explode("\n", $body);
+    $at = array_search('--', $lines, true);
+    assertSame('The full report could not be saved: disk full', $lines[$at - 1]);
+    $tech = Sentinel\Digest::build('Shop', 'host', 1760000000, $f, [], []);
+    $lines = explode("\n", Sentinel\Digest::withReportNote($tech['body'], 'The full report could not be saved: disk full', false));
+    assertSame('Highest severity: WARNING', $lines[2]);
+    assertSame('', $lines[3]);
+    assertSame('The full report could not be saved: disk full', $lines[4]);
 });

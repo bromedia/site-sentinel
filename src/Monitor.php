@@ -233,7 +233,34 @@ final class Monitor
         $sent = [];
         if ($due) {
             $digest = Digest::forConfig($this->config, $now, $due, $a['info'], $a['notes']);
-            $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top']);
+            // The full record goes with every alert: findings, every changed file and what became of it.
+            $attachment = null;
+            try {
+                $file = Report::write(
+                    $this->state->path('reports'),
+                    [
+                        'site' => $this->config->siteName,
+                        'root' => $this->config->siteRoot,
+                        'ts' => $now,
+                        'version' => VERSION,
+                        'mode' => $mode,
+                        'complete' => $d['complete'],
+                        'nested' => $this->config->nestedWordPress,
+                    ],
+                    $findings,
+                    array_map(function (Finding $f): string {
+                        return $f->key();
+                    }, $due),
+                    $d['changes'],
+                    $a['outcomes'],
+                    $a['notes']
+                );
+                $attachment = Report::attachment($file, Report::displayPath($this->state->dir(), basename($file)));
+            } catch (\Throwable $e) {
+                // An alert without its report beats no alert: say why, and send it anyway.
+                $digest['body'] = Digest::withReportNote($digest['body'], 'The full report could not be saved: ' . $this->plainReason($e), $this->config->audience === 'client');
+            }
+            $r = (new Alerter($this->channels))->send($digest['subject'], $digest['body'], $digest['top'], $attachment);
             foreach ($r['results'] as $line) {
                 $alertLines[] = 'alert ' . $line;
             }
@@ -287,6 +314,13 @@ final class Monitor
             }
         }
         return ['exit' => ($crit + $warn) > 0 ? 1 : 0, 'lines' => $lines];
+    }
+
+    /** The reason an exception gives, without the account's absolute paths. */
+    private function plainReason(\Throwable $e): string
+    {
+        $text = str_replace([$this->state->dir() . '/', $this->state->dir(), rtrim($this->config->siteRoot, '/') . '/', rtrim($this->config->siteRoot, '/')], ['', 'state', '', '.'], $e->getMessage());
+        return trim(Finding::line($text));
     }
 
     private function failed(\Throwable $e): array
